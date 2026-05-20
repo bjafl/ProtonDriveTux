@@ -12,6 +12,16 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+
+  // @protontech packages distribute TypeScript source directly.
+  // Force esbuild to pre-bundle them (don't exclude) and treat .ts extensions as TypeScript.
+  optimizeDeps: {
+    include: ["@protontech/crypto", "@protontech/drive-sdk"],
+    esbuildOptions: {
+      loader: { ".ts": "ts" },
+    },
+  },
+
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
