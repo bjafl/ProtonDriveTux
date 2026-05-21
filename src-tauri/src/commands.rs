@@ -280,3 +280,54 @@ pub fn delete_local_file(abs_path: String) -> Result<(), String> {
         Err(e) => Err(format!("remove_file {abs_path}: {e}")),
     }
 }
+
+// ── Desktop notifications ─────────────────────────────────────────────────────
+
+/// Shows a desktop notification. Silently no-ops if the notification daemon is unavailable.
+#[tauri::command]
+pub fn show_notification(title: String, body: String) {
+    let _ = notify_rust::Notification::new()
+        .summary(&title)
+        .body(&body)
+        .appname("Proton Drive Sync")
+        .show();
+}
+
+// ── Autostart ─────────────────────────────────────────────────────────────────
+
+fn autostart_path() -> Result<std::path::PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    Ok(std::path::PathBuf::from(home)
+        .join(".config")
+        .join("autostart")
+        .join("proton-drive-sync.desktop"))
+}
+
+#[tauri::command]
+pub fn get_autostart_enabled() -> bool {
+    autostart_path().map(|p| p.exists()).unwrap_or(false)
+}
+
+#[tauri::command]
+pub fn enable_autostart() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let path = autostart_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let content = format!(
+        "[Desktop Entry]\nType=Application\nName=Proton Drive Sync\nExec={} --minimized\nHidden=false\nX-GNOME-Autostart-enabled=true\n",
+        exe.display()
+    );
+    std::fs::write(&path, content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn disable_autostart() -> Result<(), String> {
+    let path = autostart_path()?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}

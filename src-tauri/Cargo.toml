@@ -35,4 +35,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }
+notify-rust = "4"
 

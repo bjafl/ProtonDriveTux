@@ -16,11 +16,11 @@ pub struct WatchEvent {
 pub fn start_watcher(app: AppHandle, watch_path: PathBuf) {
     std::thread::spawn(move || {
         if !watch_path.exists() {
-            eprintln!(
-                "[watcher] {:?} finnes ikke — opprett mappen for å aktivere inotify",
-                watch_path
-            );
-            return;
+            if let Err(e) = std::fs::create_dir_all(&watch_path) {
+                eprintln!("[watcher] Klarte ikke opprette {:?}: {e}", watch_path);
+                return;
+            }
+            eprintln!("[watcher] Opprettet sync-mappe: {:?}", watch_path);
         }
 
         let (tx, rx) = mpsc::channel::<notify::Result<Event>>();

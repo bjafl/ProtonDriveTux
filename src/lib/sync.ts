@@ -217,6 +217,10 @@ async function handleLocalUpsert(absPath: string, _syncRoot: string): Promise<vo
       syncState: "synced",
     });
 
+    invoke("show_notification", {
+      title: "Proton Drive Sync",
+      body: `Lastet opp: ${filename}`,
+    }).catch(() => {});
     console.log("[sync] uploaded:", absPath, "→", nodeUid);
   } catch (err) {
     console.error("[sync] upload failed for", absPath, err);
@@ -304,6 +308,10 @@ async function handleRemoteNodeUpdate(nodeUid: string, syncRoot: string): Promis
       syncState: "synced",
     });
 
+    invoke("show_notification", {
+      title: "Proton Drive Sync",
+      body: `Lastet ned: ${node.name}`,
+    }).catch(() => {});
     console.log("[sync] downloaded remote node:", nodeUid, "→", absPath);
   } catch (err) {
     console.error("[sync] download failed for node", nodeUid, err);

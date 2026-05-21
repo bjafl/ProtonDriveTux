@@ -5,7 +5,6 @@ import { LoginForm } from "./components/LoginForm";
 import { initDriveClient, deriveKeyPassword, releaseDriveClient } from "./lib/drive";
 import { startSync, setSyncStatusCallback } from "./lib/sync";
 import type { SyncStatus } from "./lib/sync";
-import { SmokeTest } from "./components/SmokeTest";
 import "./App.css";
 
 interface AuthStatus {
@@ -126,7 +125,31 @@ function MainView() {
   const [localEvents, setLocalEvents] = useState<LocalEvent[]>([]);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({ active: [], errors: [] });
   const [fileStates, setFileStates] = useState<FileState[]>([]);
+  const [autostartEnabled, setAutostartEnabled] = useState<boolean>(false);
+  const [autostartLoading, setAutostartLoading] = useState(false);
   const stopSyncRef = useRef<(() => void) | null>(null);
+
+  // Load autostart state once.
+  useEffect(() => {
+    invoke<boolean>("get_autostart_enabled").then(setAutostartEnabled).catch(console.error);
+  }, []);
+
+  const handleAutostartToggle = async () => {
+    setAutostartLoading(true);
+    try {
+      if (autostartEnabled) {
+        await invoke("disable_autostart");
+        setAutostartEnabled(false);
+      } else {
+        await invoke("enable_autostart");
+        setAutostartEnabled(true);
+      }
+    } catch (err) {
+      console.error("Autostart toggle failed:", err);
+    } finally {
+      setAutostartLoading(false);
+    }
+  };
 
   // Resolve sync path, start engine, register status callback, set up listeners.
   useEffect(() => {
@@ -272,7 +295,24 @@ function MainView() {
         )}
       </div>
 
-      <SmokeTest />
+      {/* Settings */}
+      <div className="events-card">
+        <h2>Innstillinger</h2>
+        <div className="setting-row">
+          <div>
+            <div className="setting-label">Start ved innlogging</div>
+            <div className="setting-hint">Start Proton Drive Sync automatisk når du logger inn på GNOME.</div>
+          </div>
+          <button
+            className={`toggle-btn ${autostartEnabled ? "on" : ""}`}
+            onClick={handleAutostartToggle}
+            disabled={autostartLoading}
+            aria-pressed={autostartEnabled}
+          >
+            {autostartEnabled ? "På" : "Av"}
+          </button>
+        </div>
+      </div>
 
       {/* Inotify event log */}
       <div className="events-card">

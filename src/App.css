@@ -71,6 +71,7 @@ h2 {
   height: 10px;
   border-radius: 50%;
   flex-shrink: 0;
+  background: var(--border);
 }
 
 .status-dot.running {
@@ -286,6 +287,52 @@ code {
   color: var(--text-muted);
   font-size: 0.9rem;
 }
+
+/* --- Settings --- */
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.setting-label {
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.setting-hint {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: 0.15rem;
+}
+
+.toggle-btn {
+  flex-shrink: 0;
+  width: 3.5rem;
+  padding: 0.3rem 0;
+  border-radius: 20px;
+  border: 1.5px solid var(--border);
+  background: var(--bg);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.toggle-btn.on {
+  background: var(--purple);
+  border-color: var(--purple);
+  color: #fff;
+}
+
+.toggle-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 
 @media (prefers-color-scheme: dark) {
   :root {
