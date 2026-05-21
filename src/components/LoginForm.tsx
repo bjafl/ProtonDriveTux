@@ -13,7 +13,7 @@ interface Props {
   onLoginSuccess: () => void;
 }
 
-type Step = "credentials" | "captcha" | "totp";
+type Step = "credentials" | "captcha" | "totp" | "mailbox";
 
 interface Partial2FA {
   uid: string;
@@ -78,7 +78,7 @@ export function LoginForm({ onLoginSuccess }: Props) {
         setStep("totp");
         return;
       }
-      await initSdk(result.uid, result.accessToken, password);
+      await initSdk(result.uid, result.accessToken, result.refreshToken, result.userId, password);
       onLoginSuccess();
     } catch (err: unknown) {
       setError(String(err));
@@ -89,11 +89,11 @@ export function LoginForm({ onLoginSuccess }: Props) {
     }
   }
 
-  async function initSdk(uid: string, accessToken: string, pwd: string) {
+  async function initSdk(uid: string, accessToken: string, refreshToken: string, userId: string, pwd: string) {
     setStatus("Avleder nøkkelpassord…");
     const keyPassword = await deriveKeyPassword(pwd, accessToken, uid);
     setStatus("Initialiserer Drive-klient…");
-    await initDriveClient({ uid, accessToken, keyPassword });
+    await initDriveClient({ uid, accessToken, refreshToken, userId, keyPassword });
   }
 
   const handleCredentials = async (e: React.FormEvent) => {
@@ -118,7 +118,20 @@ export function LoginForm({ onLoginSuccess }: Props) {
         return;
       }
 
-      await initSdk(result.uid, result.accessToken, password);
+      if (result.dualPasswordMode) {
+        setPartial({
+          uid: result.uid,
+          accessToken: result.accessToken,
+          refreshToken: result.refreshToken,
+          userId: result.userId,
+        });
+        setStep("mailbox");
+        setLoading(false);
+        setStatus(null);
+        return;
+      }
+
+      await initSdk(result.uid, result.accessToken, result.refreshToken, result.userId, password);
       onLoginSuccess();
     } catch (err: unknown) {
       if (err instanceof HumanVerificationError) {
@@ -143,7 +156,24 @@ export function LoginForm({ onLoginSuccess }: Props) {
     setLoading(true);
     try {
       await submitTotp(partial.uid, partial.accessToken, partial.refreshToken, partial.userId, totp);
-      await initSdk(partial.uid, partial.accessToken, password);
+      await initSdk(partial.uid, partial.accessToken, partial.refreshToken, partial.userId, password);
+      onLoginSuccess();
+    } catch (err: unknown) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Dual-password mode: user has a separate mailbox password for key decryption.
+  const [mailboxPassword, setMailboxPassword] = useState("");
+  const handleMailboxPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!partial) return;
+    setError(null);
+    setLoading(true);
+    try {
+      await initSdk(partial.uid, partial.accessToken, partial.refreshToken, partial.userId, mailboxPassword);
       onLoginSuccess();
     } catch (err: unknown) {
       setError(String(err));
@@ -249,6 +279,39 @@ export function LoginForm({ onLoginSuccess }: Props) {
             {error && <p className="login-error">{error}</p>}
             <button type="submit" className="login-btn" disabled={loading}>
               {loading ? "Bekreft…" : "Bekreft"}
+            </button>
+          </form>
+        )}
+
+        {step === "mailbox" && (
+          <form onSubmit={handleMailboxPassword} className="login-form">
+            <p className="hint">
+              Kontoen din bruker separat postboks-passord. Skriv inn postboks-passordet for å låse opp krypteringsnøkler.
+            </p>
+            <div className="field">
+              <label htmlFor="mailbox-password">Postboks-passord</label>
+              <input
+                id="mailbox-password"
+                type="password"
+                autoComplete="current-password"
+                value={mailboxPassword}
+                onChange={(e) => setMailboxPassword(e.target.value)}
+                placeholder="••••••••"
+                required
+                disabled={loading}
+                autoFocus
+              />
+              <button
+                type="button"
+                className="back-btn"
+                onClick={() => { setStep("credentials"); setMailboxPassword(""); setError(null); setPartial(null); }}
+              >
+                ← Tilbake
+              </button>
+            </div>
+            {error && <p className="login-error">{error}</p>}
+            <button type="submit" className="login-btn" disabled={loading}>
+              {loading ? "Låser opp…" : "Lås opp"}
             </button>
           </form>
         )}

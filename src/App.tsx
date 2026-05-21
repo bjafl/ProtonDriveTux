@@ -15,6 +15,8 @@ interface AuthStatus {
 interface SessionTokens {
   uid: string;
   accessToken: string;
+  refreshToken: string;
+  userId: string;
 }
 
 interface WatchEvent {
@@ -52,7 +54,13 @@ function UnlockForm({ onUnlocked }: { onUnlocked: () => void }) {
       const tokens = await invoke<SessionTokens | null>("get_session_tokens");
       if (!tokens) throw new Error("Ingen lagret sesjon — logg inn på nytt");
       const keyPassword = await deriveKeyPassword(password, tokens.accessToken, tokens.uid);
-      await initDriveClient({ uid: tokens.uid, accessToken: tokens.accessToken, keyPassword });
+      await initDriveClient({
+        uid: tokens.uid,
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        userId: tokens.userId,
+        keyPassword,
+      });
       onUnlocked();
     } catch (err: unknown) {
       setError(String(err));

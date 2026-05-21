@@ -9,7 +9,10 @@
     {
       "identifier": "http:default",
       "allow": [
-        { "url": "https://mail.proton.me/*" }
+        { "url": "https://mail.proton.me/*" },
+        { "url": "https://drive-api.proton.me/*" },
+        { "url": "https://api.proton.me/*" },
+        { "url": "https://verify.proton.me/*" }
       ]
     }
   ]

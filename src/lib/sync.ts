@@ -16,10 +16,13 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   getSyncRoot,
   getFileUploader,
+  getFileRevisionUploader,
   getFileDownloader,
-  subscribeToDriveEvents,
+  subscribeToTreeEvents,
   getNode,
   findOrCreateFolder,
+  listFolderChildren,
+  persistEventAnchor,
 } from "./drive";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -43,6 +46,11 @@ interface FileState {
   syncState: string;
 }
 
+interface FileStat {
+  mtimeMs: number;
+  sizeBytes: number;
+}
+
 // ── Config ───────────────────────────────────────────────────────────────────
 
 /**
@@ -63,6 +71,8 @@ const SUPPRESS_MS = 5_000;
 
 /** UID of the remote Drive folder we sync against (resolved once on startup). */
 let _syncFolderUid: string | null = null;
+/** Volume event scope for the Drive tree — used with subscribeToTreeEvents. */
+let _treeEventScopeId: string | null = null;
 
 export function getSyncFolderUid(): string | null {
   return _syncFolderUid;
@@ -116,6 +126,34 @@ function isSuppressed(absPath: string): boolean {
   return false;
 }
 
+// ── File stability helpers ───────────────────────────────────────────────────
+
+async function statFile(absPath: string): Promise<FileStat | null> {
+  try {
+    return await invoke<FileStat>("stat_local_file", { absPath });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Waits until the file's mtime and size stop changing, up to ~2 s.
+ * Returns the stable stat, or null if the file vanished.
+ */
+async function waitForFileStable(absPath: string): Promise<FileStat | null> {
+  const first = await statFile(absPath);
+  if (!first) return null;
+  await new Promise<void>((r) => setTimeout(r, 1_000));
+  const second = await statFile(absPath);
+  if (!second) return null;
+  if (second.mtimeMs === first.mtimeMs && second.sizeBytes === first.sizeBytes) {
+    return second;
+  }
+  // Still changing — wait one more second and proceed regardless.
+  await new Promise<void>((r) => setTimeout(r, 1_000));
+  return statFile(absPath);
+}
+
 // ── Sync folder resolution ───────────────────────────────────────────────────
 
 /**
@@ -124,10 +162,14 @@ function isSuppressed(absPath: string): boolean {
  * restarts without an extra API round-trip.
  */
 async function resolveSyncFolder(): Promise<string> {
-  // Check DB cache first.
-  const cached = await invoke<string | null>("get_db_sync_config", { key: "sync_folder_uid" });
-  if (cached) {
+  // Check DB cache first (both folder UID and tree event scope).
+  const [cached, cachedScope] = await Promise.all([
+    invoke<string | null>("get_db_sync_config", { key: "sync_folder_uid" }),
+    invoke<string | null>("get_db_sync_config", { key: "tree_event_scope_id" }),
+  ]);
+  if (cached && cachedScope) {
     _syncFolderUid = cached;
+    _treeEventScopeId = cachedScope;
     return cached;
   }
 
@@ -135,6 +177,10 @@ async function resolveSyncFolder(): Promise<string> {
   if (!rootResult.ok) {
     throw new Error("Could not get Drive root: " + String(rootResult.error));
   }
+
+  // Capture the volume's event scope from the root node.
+  _treeEventScopeId = rootResult.value.treeEventScopeId;
+  await invoke("set_db_sync_config", { key: "tree_event_scope_id", value: _treeEventScopeId });
 
   const folderResult = await findOrCreateFolder(rootResult.value, SYNC_FOLDER_NAME);
   if (!folderResult.ok) {
@@ -144,7 +190,7 @@ async function resolveSyncFolder(): Promise<string> {
   const uid = folderResult.value.uid;
   await invoke("set_db_sync_config", { key: "sync_folder_uid", value: uid });
   _syncFolderUid = uid;
-  console.log("[sync] Sync folder resolved:", SYNC_FOLDER_NAME, "→", uid);
+  console.log("[sync] Sync folder resolved:", SYNC_FOLDER_NAME, "→", uid, "scope:", _treeEventScopeId);
   return uid;
 }
 
@@ -162,8 +208,13 @@ export async function startSync(syncRoot: string): Promise<() => void> {
   // Resolve (or create) the test folder before accepting any events.
   await resolveSyncFolder();
 
-  // Subscribe to remote Drive events.
-  const subscription = await subscribeToDriveEvents(async (event: DriveEvent) => {
+  // Initial sync: download any pre-existing remote files and upload untracked local files.
+  await initialSyncFolder(syncRoot);
+  await initialSyncLocalFolder(syncRoot);
+
+  // Subscribe to the volume's tree event scope for file-level events (NodeCreated, etc.).
+  if (!_treeEventScopeId) throw new Error("Tree event scope ID not resolved");
+  const subscription = await subscribeToTreeEvents(_treeEventScopeId, async (event: DriveEvent) => {
     try {
       await handleDriveEvent(event, syncRoot);
     } catch (err) {
@@ -192,6 +243,66 @@ export async function startSync(syncRoot: string): Promise<() => void> {
   };
 }
 
+// ── Initial sync ─────────────────────────────────────────────────────────────
+
+/**
+ * Enumerate all files in the sync folder. Downloads files that are not yet
+ * tracked locally, and re-downloads files whose remote revision has changed.
+ * Also called when TreeRefresh/FastForward signals the event stream has gaps.
+ */
+async function initialSyncFolder(syncRoot: string): Promise<void> {
+  if (!_syncFolderUid) return;
+  console.log("[sync] Scanning remote sync folder…");
+  let downloaded = 0;
+  try {
+    for await (const result of listFolderChildren(_syncFolderUid, { type: NodeType.File })) {
+      if (!result.ok) {
+        console.warn("[sync] Error enumerating child:", result.error);
+        continue;
+      }
+      const node = result.value;
+      const existing = await invoke<FileState | null>("get_file_state_by_remote_id", {
+        remoteId: node.uid,
+      });
+
+      if (existing) {
+        // Skip if we already have the same revision.
+        const remoteRevUid = node.activeRevision?.uid;
+        if (remoteRevUid && remoteRevUid === existing.etag) continue;
+      }
+
+      await handleRemoteNodeUpdate(node.uid, syncRoot);
+      downloaded++;
+    }
+  } catch (err) {
+    console.error("[sync] Initial folder scan failed:", err);
+  }
+  console.log("[sync] Remote scan complete, synced", downloaded, "file(s)");
+}
+
+/**
+ * Enumerate local files and upload those not yet tracked or whose content has
+ * changed since the last sync.
+ */
+async function initialSyncLocalFolder(syncRoot: string): Promise<void> {
+  console.log("[sync] Scanning local sync folder…");
+  let uploaded = 0;
+  try {
+    const files = await invoke<string[]>("list_local_dir", { absPath: syncRoot });
+    for (const absPath of files) {
+      // handleLocalUpsert handles its own "skip if unchanged" logic.
+      const before = _status.active.length;
+      await handleLocalUpsert(absPath, syncRoot, false);
+      if (_status.active.length !== before || _status.errors.some((e) => e.path === absPath)) {
+        uploaded++;
+      }
+    }
+  } catch (err) {
+    console.error("[sync] Local folder scan failed:", err);
+  }
+  console.log("[sync] Local scan complete, processed", uploaded, "file(s)");
+}
+
 // ── Local → Remote ───────────────────────────────────────────────────────────
 
 async function handleLocalChange(event: WatchEvent, syncRoot: string): Promise<void> {
@@ -208,23 +319,46 @@ async function handleLocalChange(event: WatchEvent, syncRoot: string): Promise<v
     return;
   }
 
-  // create | modify
-  await handleLocalUpsert(absPath, syncRoot);
+  // create | modify — stability check before uploading.
+  await handleLocalUpsert(absPath, syncRoot, true);
 }
 
-async function handleLocalUpsert(absPath: string, _syncRoot: string): Promise<void> {
+/**
+ * Uploads a local file to Drive, creating a new revision if the file already
+ * exists remotely. Skips the upload if the file is unchanged (same size).
+ *
+ * @param checkStability - When true, waits for the file to stop changing
+ *   before reading it (prevents uploading partial writes). Pass false during
+ *   the startup scan where files are already at rest.
+ */
+async function handleLocalUpsert(
+  absPath: string,
+  _syncRoot: string,
+  checkStability: boolean,
+): Promise<void> {
   const label = absPath;
   markActive(label);
   try {
-    // Guard: if this path is already tracked in the DB, skip the upload.
-    // Uploading a file we already synced would create a duplicate node on Drive.
-    // Revision-based updates can be added once the sync logic is proven correct.
+    // Get a stable snapshot of the file's metadata.
+    const stat = checkStability
+      ? await waitForFileStable(absPath)
+      : await statFile(absPath);
+
+    if (!stat) {
+      console.log("[sync] skipping (file disappeared or unreadable):", absPath);
+      return;
+    }
+
     const existing = await invoke<FileState | null>("get_file_state_by_local_path", {
       localPath: absPath,
     });
+
     if (existing) {
-      console.log("[sync] skipping upload — path already tracked (remoteId:", existing.remoteId, "):", absPath);
-      return;
+      // Skip if size is unchanged — cheapest signal for "probably the same content".
+      if (existing.sizeBytes !== null && stat.sizeBytes === existing.sizeBytes) {
+        console.log("[sync] skipping upload — size unchanged:", absPath);
+        return;
+      }
     }
 
     // Read file as base64.
@@ -232,56 +366,60 @@ async function handleLocalUpsert(absPath: string, _syncRoot: string): Promise<vo
     try {
       contentB64 = await invoke<string>("read_local_file", { absPath });
     } catch (err) {
-      // Could be a directory or a file we can't read — skip silently.
       console.log("[sync] skipping (unreadable):", absPath, err);
       return;
     }
 
-    // Decode to get byte count.
     const raw = atob(contentB64);
     const bytes = new Uint8Array(raw.length);
     for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
 
     const filename = absPath.split("/").pop() ?? absPath;
+    if (!_syncFolderUid) throw new Error("Sync folder not resolved — cannot upload");
 
-    // Upload into the test sync folder (never the Drive root).
-    if (!_syncFolderUid) {
-      throw new Error("Sync folder not resolved — cannot upload");
-    }
-
-    // Build a File object from the raw bytes.
     const blob = new Blob([bytes]);
-    const file = new File([blob], filename, { lastModified: Date.now() });
-
-    // Upload.
-    const uploader = await getFileUploader(_syncFolderUid, filename, {
+    const file = new File([blob], filename, { lastModified: stat.mtimeMs });
+    const metadata = {
       mediaType: "application/octet-stream",
       expectedSize: bytes.length,
-      modificationTime: new Date(),
-    });
+      modificationTime: new Date(stat.mtimeMs),
+    };
 
-    const controller = await uploader.uploadFromFile(file, [], () => {});
-    const { nodeUid } = await controller.completion();
+    let nodeUid: string;
+    let nodeRevisionUid: string;
 
-    // Suppress the drive event for our own upload.
-    recentlyUploaded.add(nodeUid);
-    setTimeout(() => recentlyUploaded.delete(nodeUid), SUPPRESS_MS);
+    if (existing) {
+      // Upload a new revision of the existing Drive node.
+      const uploader = await getFileRevisionUploader(existing.remoteId, metadata);
+      const controller = await uploader.uploadFromFile(file, [], () => {});
+      ({ nodeUid, nodeRevisionUid } = await controller.completion());
+      console.log("[sync] uploaded revision:", absPath, "→", nodeUid, "rev:", nodeRevisionUid);
+    } else {
+      // Upload a brand-new file.
+      const uploader = await getFileUploader(_syncFolderUid, filename, metadata);
+      const controller = await uploader.uploadFromFile(file, [], () => {});
+      ({ nodeUid, nodeRevisionUid } = await controller.completion());
 
-    // Persist to DB.
+      // Suppress the drive event for our own upload.
+      recentlyUploaded.add(nodeUid);
+      setTimeout(() => recentlyUploaded.delete(nodeUid), SUPPRESS_MS);
+
+      console.log("[sync] uploaded new file:", absPath, "→", nodeUid, "rev:", nodeRevisionUid);
+    }
+
     await invoke("upsert_file_state", {
       remoteId: nodeUid,
       localPath: absPath,
-      etag: null,
-      modifiedAt: Date.now(),
+      etag: nodeRevisionUid,
+      modifiedAt: stat.mtimeMs,
       sizeBytes: bytes.length,
       syncState: "synced",
     });
 
     invoke("show_notification", {
       title: "Proton Drive Sync",
-      body: `Lastet opp: ${filename}`,
+      body: `${existing ? "Oppdatert" : "Lastet opp"}: ${filename}`,
     }).catch(() => {});
-    console.log("[sync] uploaded:", absPath, "→", nodeUid);
   } catch (err) {
     console.error("[sync] upload failed for", absPath, err);
     recordError(absPath, String(err));
@@ -297,16 +435,45 @@ async function handleDriveEvent(event: DriveEvent, syncRoot: string): Promise<vo
     event.type === DriveEventType.NodeCreated ||
     event.type === DriveEventType.NodeUpdated
   ) {
-    const { nodeUid } = event;
-    if (recentlyUploaded.has(nodeUid)) {
-      console.log("[sync] suppressed drive event for own upload:", nodeUid);
+    // A trashed node event means the file was moved to trash — treat as deletion.
+    if (event.isTrashed) {
+      await handleRemoteDelete(event.nodeUid, syncRoot);
       return;
     }
-    await handleRemoteNodeUpdate(nodeUid, syncRoot);
+
+    // Early filter: if parentNodeUid is known and not our sync folder, skip without API call.
+    if (event.parentNodeUid && event.parentNodeUid !== _syncFolderUid) {
+      console.log("[sync] skipping node outside sync folder (by parentUid):", event.nodeUid);
+      return;
+    }
+
+    if (recentlyUploaded.has(event.nodeUid)) {
+      console.log("[sync] suppressed drive event for own upload:", event.nodeUid);
+      return;
+    }
+
+    await handleRemoteNodeUpdate(event.nodeUid, syncRoot);
+
   } else if (event.type === DriveEventType.NodeDeleted) {
     await handleRemoteDelete(event.nodeUid, syncRoot);
+
+  } else if (
+    event.type === DriveEventType.TreeRefresh ||
+    event.type === DriveEventType.FastForward
+  ) {
+    // The event stream has a gap — re-scan the sync folder to catch up.
+    console.log("[sync] received", event.type, "— triggering full folder re-scan");
+    await initialSyncFolder(syncRoot);
+
   } else {
-    console.log("[sync] skipping drive event type:", event.type);
+    // TreeRemove, SharedWithMeUpdated, etc. — not relevant to our sync folder.
+    console.log("[sync] ignoring drive event type:", event.type);
+  }
+
+  // Persist the anchor after successful handling so the subscription resumes
+  // from this point on next startup instead of replaying from scratch.
+  if ("treeEventScopeId" in event && "eventId" in event) {
+    persistEventAnchor(event.treeEventScopeId, event.eventId).catch(() => {});
   }
 }
 
@@ -333,7 +500,47 @@ async function handleRemoteNodeUpdate(nodeUid: string, syncRoot: string): Promis
       return;
     }
 
-    // Download.
+    const existing = await invoke<FileState | null>("get_file_state_by_remote_id", {
+      remoteId: nodeUid,
+    });
+
+    const activeRevisionUid = node.activeRevision?.uid ?? null;
+    const expectedPath = `${syncRoot}/${node.name}`;
+
+    if (existing) {
+      const isRename = existing.localPath !== expectedPath;
+      const isContentSame = activeRevisionUid !== null && activeRevisionUid === existing.etag;
+
+      if (!isRename && isContentSame) {
+        console.log("[sync] skipping download — no changes for", nodeUid);
+        return;
+      }
+
+      if (isRename && isContentSame) {
+        // Pure rename: move the local file and update the DB record.
+        suppressPath(existing.localPath);
+        suppressPath(expectedPath);
+        await invoke("rename_local_file", { fromPath: existing.localPath, toPath: expectedPath });
+        await invoke("upsert_file_state", {
+          remoteId: nodeUid,
+          localPath: expectedPath,
+          etag: existing.etag,
+          modifiedAt: existing.modifiedAt,
+          sizeBytes: existing.sizeBytes,
+          syncState: "synced",
+        });
+        console.log("[sync] renamed local file:", existing.localPath, "→", expectedPath);
+        return;
+      }
+
+      // Content changed (possibly also renamed): trash the old local file if path differs.
+      if (isRename) {
+        suppressPath(existing.localPath);
+        await invoke("trash_local_file", { absPath: existing.localPath, syncRoot });
+      }
+    }
+
+    // Download the file to its new (or unchanged) path.
     const downloader = await getFileDownloader(nodeUid);
     const chunks: Uint8Array[] = [];
     const writable = new WritableStream<Uint8Array>({
@@ -356,18 +563,15 @@ async function handleRemoteNodeUpdate(nodeUid: string, syncRoot: string): Promis
     for (let i = 0; i < merged.length; i++) binary += String.fromCharCode(merged[i]);
     const b64 = btoa(binary);
 
-    // Flat layout for MVP: syncRoot/filename
-    const absPath = `${syncRoot}/${node.name}`;
-
     // Suppress inotify so we don't re-upload what we just wrote.
-    suppressPath(absPath);
+    suppressPath(expectedPath);
 
-    await invoke("write_local_file", { absPath, contentB64: b64 });
+    await invoke("write_local_file", { absPath: expectedPath, contentB64: b64 });
 
     const revision = node.activeRevision;
     await invoke("upsert_file_state", {
       remoteId: nodeUid,
-      localPath: absPath,
+      localPath: expectedPath,
       etag: revision?.uid ?? null,
       modifiedAt: node.modificationTime.getTime(),
       sizeBytes: revision?.claimedSize ?? null,
@@ -378,7 +582,7 @@ async function handleRemoteNodeUpdate(nodeUid: string, syncRoot: string): Promis
       title: "Proton Drive Sync",
       body: `Lastet ned: ${node.name}`,
     }).catch(() => {});
-    console.log("[sync] downloaded remote node:", nodeUid, "→", absPath);
+    console.log("[sync] downloaded remote node:", nodeUid, "→", expectedPath);
   } catch (err) {
     console.error("[sync] download failed for node", nodeUid, err);
     recordError(nodeUid, String(err));

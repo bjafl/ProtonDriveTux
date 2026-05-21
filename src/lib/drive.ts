@@ -11,10 +11,12 @@ import {
   type EventSubscription,
   type FileDownloader,
   type FileUploader,
+  type LatestEventIdProvider,
   type MaybeNode,
   type NodeOrUid,
   type UploadMetadata,
 } from "@protontech/drive-sdk";
+import { invoke } from "@tauri-apps/api/core";
 
 import { fetch } from "./tauriFetch";
 import { createAccountProvider } from "./accountProvider";
@@ -29,11 +31,68 @@ const APP_VERSION =
 export interface DriveSession {
   uid: string;
   accessToken: string;
+  refreshToken: string;
+  userId: string;
   keyPassword: string;
 }
 
 let driveClient: ProtonDriveClient | null = null;
 let currentSession: DriveSession | null = null;
+
+// Reads/writes event anchors from the Tauri DB so subscriptions resume after restart.
+const latestEventIdProvider: LatestEventIdProvider = {
+  async getLatestEventId(treeEventScopeId: string): Promise<string | null> {
+    return invoke<string | null>("get_db_sync_config", {
+      key: `event_anchor_${treeEventScopeId}`,
+    });
+  },
+};
+
+export async function persistEventAnchor(treeEventScopeId: string, eventId: string): Promise<void> {
+  if (!eventId || eventId === "none") return;
+  await invoke("set_db_sync_config", {
+    key: `event_anchor_${treeEventScopeId}`,
+    value: eventId,
+  });
+}
+
+/**
+ * Refreshes the access token using the stored refresh token.
+ * Updates currentSession in-place so existing httpClient closures see the new token.
+ * Persists the new tokens to the Rust keyring.
+ */
+async function refreshSession(): Promise<void> {
+  if (!currentSession) throw new Error("No session to refresh");
+  const { uid, refreshToken, userId } = currentSession;
+
+  const resp = await fetch(`${BASE_URL}/auth/v4/refresh`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-pm-appversion": APP_VERSION,
+      "x-pm-uid": uid,
+      Authorization: `Bearer ${refreshToken}`,
+    },
+    body: JSON.stringify({ UID: uid, RefreshToken: refreshToken }),
+  });
+
+  if (!resp.ok) throw new Error(`Token refresh failed: ${resp.status}`);
+  const data = (await resp.json()) as {
+    AccessToken: string;
+    RefreshToken: string;
+    UID: string;
+  };
+
+  currentSession.accessToken = data.AccessToken;
+  currentSession.refreshToken = data.RefreshToken;
+
+  await invoke("store_tokens", {
+    uid,
+    accessToken: data.AccessToken,
+    refreshToken: data.RefreshToken,
+    userId,
+  });
+}
 
 export async function initDriveClient(session: DriveSession): Promise<void> {
   await initCrypto();
@@ -43,6 +102,7 @@ export async function initDriveClient(session: DriveSession): Promise<void> {
   const httpClient = createHttpClient(
     () => currentSession?.accessToken ?? null,
     () => currentSession?.uid ?? null,
+    () => refreshSession(),
   );
 
   const account = createAccountProvider(
@@ -59,6 +119,7 @@ export async function initDriveClient(session: DriveSession): Promise<void> {
     openPGPCryptoModule: createOpenPGPCryptoModule(),
     srpModule: createSrpModule(),
     featureFlagProvider: new NullFeatureFlagProvider(),
+    latestEventIdProvider,
   });
 }
 
@@ -94,6 +155,13 @@ export async function subscribeToDriveEvents(
   return getDriveClient().subscribeToDriveEvents(listener);
 }
 
+export async function subscribeToTreeEvents(
+  treeEventScopeId: string,
+  listener: DriveListener,
+): Promise<EventSubscription> {
+  return getDriveClient().subscribeToTreeEvents(treeEventScopeId, listener);
+}
+
 export async function getFileDownloader(
   nodeUid: NodeOrUid,
   signal?: AbortSignal,
@@ -108,6 +176,14 @@ export async function getFileUploader(
   signal?: AbortSignal,
 ): Promise<FileUploader> {
   return getDriveClient().getFileUploader(parentFolderUid, name, metadata, signal);
+}
+
+export async function getFileRevisionUploader(
+  nodeUid: NodeOrUid,
+  metadata: UploadMetadata,
+  signal?: AbortSignal,
+): Promise<FileUploader> {
+  return getDriveClient().getFileRevisionUploader(nodeUid, metadata, signal);
 }
 
 export async function createFolder(

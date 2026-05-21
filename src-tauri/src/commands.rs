@@ -31,6 +31,15 @@ pub struct AuthStatus {
 pub struct SessionTokens {
     pub uid: String,
     pub access_token: String,
+    pub refresh_token: String,
+    pub user_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileStat {
+    pub mtime_ms: i64,
+    pub size_bytes: i64,
 }
 
 /// Called by JS after a successful SRP login to persist the session in GNOME Keyring.
@@ -103,6 +112,8 @@ pub fn get_session_tokens(state: State<'_, AppState>) -> Option<SessionTokens> {
     session.as_ref().map(|s| SessionTokens {
         uid: s.uid.clone(),
         access_token: s.access_token.clone(),
+        refresh_token: s.refresh_token.clone(),
+        user_id: s.user_id.clone(),
     })
 }
 
@@ -286,6 +297,20 @@ pub fn set_db_sync_config(
 
 // ── Local file I/O commands ──────────────────────────────────────────────────
 
+/// Lists regular files (non-directories) directly inside abs_path. Returns absolute paths.
+#[tauri::command]
+pub fn list_local_dir(abs_path: String) -> Result<Vec<String>, String> {
+    let entries = std::fs::read_dir(&abs_path)
+        .map_err(|e| format!("read_dir {abs_path}: {e}"))?;
+    let mut files = Vec::new();
+    for entry in entries.flatten() {
+        if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            files.push(entry.path().to_string_lossy().into_owned());
+        }
+    }
+    Ok(files)
+}
+
 /// Reads a local file and returns its contents as a base64-encoded string.
 #[tauri::command]
 pub fn read_local_file(abs_path: String) -> Result<String, String> {
@@ -340,6 +365,30 @@ pub fn delete_local_file(abs_path: String) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("remove_file {abs_path}: {e}")),
     }
+}
+
+/// Returns the modification time (in ms since Unix epoch) and size of a local file.
+#[tauri::command]
+pub fn stat_local_file(abs_path: String) -> Result<FileStat, String> {
+    let meta = std::fs::metadata(&abs_path)
+        .map_err(|e| format!("stat {abs_path}: {e}"))?;
+    let mtime_ms = meta
+        .modified()
+        .map_err(|e| format!("mtime {abs_path}: {e}"))?
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    Ok(FileStat {
+        mtime_ms,
+        size_bytes: meta.len() as i64,
+    })
+}
+
+/// Renames (moves) a local file. Fails if the source does not exist.
+#[tauri::command]
+pub fn rename_local_file(from_path: String, to_path: String) -> Result<(), String> {
+    std::fs::rename(&from_path, &to_path)
+        .map_err(|e| format!("rename {from_path} → {to_path}: {e}"))
 }
 
 // ── Desktop notifications ─────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ const APP_VERSION = import.meta.env.VITE_PROTON_APP_VERSION ?? "external-drive-p
 export function createHttpClient(
   getAccessToken: () => string | null,
   getUid: () => string | null,
+  onRefresh?: () => Promise<void>,
 ): ProtonDriveHTTPClient {
   function baseHeaders(extra?: Headers): Headers {
     const headers = new Headers(extra);
@@ -24,6 +25,7 @@ export function createHttpClient(
 
   async function doFetch(
     request: ProtonDriveHTTPClientJsonRequest | ProtonDriveHTTPClientBlobRequest,
+    retried = false,
   ): Promise<Response> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), request.timeoutMs);
@@ -41,17 +43,31 @@ export function createHttpClient(
       body = request.body;
     }
 
+    let response: Response;
     try {
-      const response = await fetch(request.url, {
+      response = await fetch(request.url, {
         method: request.method,
         headers,
         body,
         signal,
       });
-      return response;
     } finally {
       clearTimeout(timeoutId);
     }
+
+    // On 401 (expired access token), attempt one refresh+retry.
+    if (response.status === 401 && !retried && onRefresh) {
+      try {
+        await onRefresh();
+        return doFetch(request, true);
+      } catch (err) {
+        console.error("[httpClient] Token refresh failed:", err);
+        // Return the original 401 so the caller can handle it.
+        return response;
+      }
+    }
+
+    return response;
   }
 
   return {

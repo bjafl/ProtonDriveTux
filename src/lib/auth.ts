@@ -81,6 +81,7 @@ interface AuthResponse {
   RefreshToken: string;
   UserID: string;
   "2FA": { Enabled: number };
+  PasswordMode: number; // 1 = single password, 2 = dual (separate mailbox password)
 }
 
 export interface LoginResult {
@@ -89,6 +90,8 @@ export interface LoginResult {
   refreshToken: string;
   userId: string;
   twoFactorRequired: boolean;
+  /** True for legacy accounts where the mailbox password differs from the login password. */
+  dualPasswordMode: boolean;
 }
 
 async function doSrpAuth(
@@ -132,6 +135,7 @@ async function doSrpAuth(
     refreshToken: auth.RefreshToken,
     userId: auth.UserID,
     twoFactorRequired: auth["2FA"].Enabled !== 0,
+    dualPasswordMode: auth.PasswordMode === 2,
   };
 }
 
