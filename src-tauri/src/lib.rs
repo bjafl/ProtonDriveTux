@@ -8,15 +8,15 @@ use commands::{
     AppState, close_captcha_window, delete_local_file, disable_autostart, enable_autostart,
     get_all_file_states, get_auth_status, get_autostart_enabled, get_db_sync_config,
     get_file_state_by_local_path, get_file_state_by_remote_id, get_session_tokens, logout,
-    open_captcha_window, read_local_file, relay_captcha_token, restore_session_from_keyring,
-    set_db_sync_config, set_file_sync_state, show_notification, store_tokens, trash_local_file,
-    upsert_file_state, write_local_file,
+    open_captcha_window, read_local_file, restore_session_from_keyring, set_db_sync_config,
+    set_file_sync_state, show_notification, store_tokens, trash_local_file, upsert_file_state,
+    write_local_file,
 };
 use db::Db;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Manager,
+    Emitter, Manager,
 };
 
 #[tauri::command]
@@ -32,6 +32,37 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .manage(AppState::new())
+        // pd-captcha:// is a custom scheme used to relay the solved captcha token from the
+        // captcha WebView back to the main app without using Tauri IPC (which is blocked by
+        // verify.proton.me's connect-src CSP). Registering the scheme tells WebKit2GTK it is
+        // a known scheme so navigation to it works and on_navigation fires reliably.
+        .register_uri_scheme_protocol("pd-captcha", |app, request| {
+            let token = request
+                .uri()
+                .query()
+                .and_then(|q| {
+                    url::form_urlencoded::parse(q.as_bytes())
+                        .find(|(k, _)| k == "token")
+                        .map(|(_, v)| v.into_owned())
+                })
+                .unwrap_or_default();
+
+            if !token.is_empty() {
+                let handle = app.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = handle.emit("captcha-token", token);
+                    if let Some(w) = handle.get_webview_window("captcha") {
+                        let _ = w.close();
+                    }
+                });
+            }
+
+            tauri::http::Response::builder()
+                .status(200)
+                .header("Content-Type", "text/plain")
+                .body(vec![])
+                .unwrap()
+        })
         .setup(|app| {
             // Open SQLite DB and register it as managed state.
             let data_dir = app.path().app_data_dir()?;
@@ -59,7 +90,6 @@ pub fn run() {
             get_auth_status,
             get_session_tokens,
             open_captcha_window,
-            relay_captcha_token,
             close_captcha_window,
             get_all_file_states,
             upsert_file_state,

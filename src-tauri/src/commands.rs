@@ -133,53 +133,78 @@ pub async fn open_captcha_window(
         .append_pair("token", &token)
         .append_pair("embed", "1");
 
-    // In a standalone window window.parent === window, so postMessage to parent fires on self.
-    // The verify app sends { type: 'HUMAN_VERIFICATION_SUCCESS', payload: { token, type } }.
+    // verify.proton.me detects the host environment and picks a postMessage path:
+    //   - WebView2 (Chromium): calls window.chrome.webview.postMessage({type:'pm_captcha', token:TOKEN})
+    //   - iframe embed:        calls window.parent.postMessage({type:'HUMAN_VERIFICATION_SUCCESS', payload:{token}})
     //
-    // IPC note: verify.proton.me's connect-src CSP blocks ipc://, so the first invoke()
-    // attempt fails. Tauri then switches to the postMessage IPC fallback for all subsequent
-    // calls. We retry once in the catch handler — the retry succeeds via postMessage.
+    // In a standalone WebKit window neither exists, so the page shows completion UI but
+    // never sends the token anywhere. Fix: inject a window.chrome.webview shim so the
+    // verify app takes the pm_captcha path. Also cover the postMessage path as a fallback.
+    //
+    // Token delivery uses window.location.href = 'pd-captcha://...' which is NOT subject
+    // to connect-src CSP. The scheme is registered in lib.rs so WebKit2GTK treats it as
+    // a known scheme and routes it to our handler.
     let init_script = r#"
         (function() {
-            function relayToken(token, isRetry) {
-                window.__TAURI_INTERNALS__.invoke('relay_captcha_token', { token: token })
-                    .catch(function(err) {
-                        if (!isRetry) {
-                            relayToken(token, true);
-                        } else {
-                            console.error('[captcha] relay failed after retry:', err);
-                        }
-                    });
+            function relay(token) {
+                window.location.href = 'pd-captcha://solved?token=' + encodeURIComponent(token);
             }
 
+            // Shim window.chrome.webview so verify.proton.me uses the pm_captcha path.
+            if (!window.chrome) { window.chrome = {}; }
+            window.chrome.webview = {
+                postMessage: function(data) {
+                    try {
+                        var msg = (typeof data === 'string') ? JSON.parse(data) : data;
+                        if (msg && msg.type === 'pm_captcha' && msg.token) {
+                            relay(msg.token);
+                        }
+                    } catch (e) {}
+                }
+            };
+
+            // Fallback: intercept window.postMessage in case the page uses that path.
             window.addEventListener('message', function(e) {
-                if (e.data && e.data.type === 'HUMAN_VERIFICATION_SUCCESS' && e.data.payload && e.data.payload.token) {
-                    relayToken(e.data.payload.token, false);
+                var d = e.data;
+                if (!d) { return; }
+                if (d.type === 'HUMAN_VERIFICATION_SUCCESS' && d.payload && d.payload.token) {
+                    relay(d.payload.token);
+                } else if (d.type === 'pm_captcha' && d.token) {
+                    relay(d.token);
                 }
             });
         })();
     "#;
 
+    let app_handle = app.clone();
     tauri::WebviewWindowBuilder::new(&app, "captcha", tauri::WebviewUrl::External(url))
         .title("Human Verification — Proton Drive")
         .inner_size(440.0, 560.0)
         .resizable(false)
         .devtools(true)
+        .on_navigation(move |nav_url| {
+            if nav_url.scheme() == "pd-captcha" {
+                let token = nav_url
+                    .query_pairs()
+                    .find(|(k, _)| k == "token")
+                    .map(|(_, v)| v.into_owned())
+                    .unwrap_or_default();
+                let handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = handle.emit("captcha-token", token);
+                    if let Some(w) = handle.get_webview_window("captcha") {
+                        let _ = w.close();
+                    }
+                });
+                false // block the navigation so the page doesn't actually load pd-captcha://
+            } else {
+                true // allow all normal navigation (initial load, internal verify.proton.me redirects)
+            }
+        })
         .initialization_script(init_script)
         .build()
         .map_err(|e| e.to_string())?;
 
-    Ok(())
-}
-
-/// Relays the solved captcha token from the captcha window to the main window,
-/// then closes the captcha window.
-#[tauri::command]
-pub async fn relay_captcha_token(token: String, app: tauri::AppHandle) -> Result<(), String> {
-    app.emit("captcha-token", token).map_err(|e| e.to_string())?;
-    if let Some(w) = app.get_webview_window("captcha") {
-        let _ = w.close();
-    }
     Ok(())
 }
 
