@@ -41,25 +41,19 @@ export function LoginForm({ onLoginSuccess }: Props) {
     };
   }, []);
 
-  async function openCaptchaWindow(hvToken: string) {
+  async function openCaptchaWindow(hvToken: string, methods: string[]) {
     unlistenRef.current?.();
     unlistenRef.current = null;
 
-    const [unlisten, unlistenDbg] = await Promise.all([
-      listen<string>("captcha-token", async (event) => {
-        unlisten();
-        unlistenDbg();
-        unlistenRef.current = null;
-        await handleCaptchaSolved(event.payload);
-      }),
-      listen<string>("captcha-debug", (event) => {
-        console.log("[captcha-window]", event.payload);
-      }),
-    ]);
-    unlistenRef.current = () => { unlisten(); unlistenDbg(); };
+    const unlisten = await listen<string>("captcha-token", async (event) => {
+      unlisten();
+      unlistenRef.current = null;
+      await handleCaptchaSolved(event.payload);
+    });
+    unlistenRef.current = unlisten;
 
     try {
-      await invoke("open_captcha_window", { token: hvToken, methods: hvMethods });
+      await invoke("open_captcha_window", { token: hvToken, methods });
       setStep("captcha");
     } catch (err) {
       unlisten();
@@ -132,7 +126,7 @@ export function LoginForm({ onLoginSuccess }: Props) {
         setStatus(null);
         setHvMethods(err.methods);
         console.log("[HV] methods:", err.methods, "token:", err.hvToken);
-        await openCaptchaWindow(err.hvToken);
+        await openCaptchaWindow(err.hvToken, err.methods);
         return;
       }
       setError(String(err));

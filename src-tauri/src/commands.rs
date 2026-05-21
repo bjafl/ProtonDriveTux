@@ -135,24 +135,15 @@ pub async fn open_captcha_window(
 
     // In a standalone window window.parent === window, so postMessage to parent fires on self.
     // The verify app sends { type: 'HUMAN_VERIFICATION_SUCCESS', payload: { token, type } }.
+    // Note: ipc:// custom protocol is blocked by verify.proton.me's CSP; Tauri falls back to
+    // the postMessage IPC interface automatically, so invoke() still works.
     let init_script = r#"
         (function() {
-            function dbg(msg) {
-                window.__TAURI_INTERNALS__.invoke('captcha_debug', { msg: String(msg) }).catch(function(){});
-            }
-
-            dbg('init, href=' + location.href + ' parent===self=' + (window.parent === window.self));
-
             window.addEventListener('message', function(e) {
-                dbg('msg: ' + JSON.stringify(e.data));
                 if (e.data && e.data.type === 'HUMAN_VERIFICATION_SUCCESS' && e.data.payload && e.data.payload.token) {
                     window.__TAURI_INTERNALS__.invoke('relay_captcha_token', { token: e.data.payload.token })
-                        .catch(function(err) { dbg('relay failed: ' + err); });
+                        .catch(function(err) { console.error('[captcha] relay failed:', err); });
                 }
-            });
-
-            window.addEventListener('load', function() {
-                dbg('load, final href=' + location.href);
             });
         })();
     "#;
@@ -181,12 +172,6 @@ pub fn close_captcha_window(app: tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("captcha") {
         let _ = w.close();
     }
-}
-
-/// Relays debug messages from the captcha window init script to the main window console.
-#[tauri::command]
-pub async fn captcha_debug(msg: String, app: tauri::AppHandle) -> Result<(), String> {
-    app.emit("captcha-debug", msg).map_err(|e| e.to_string())
 }
 
 // ── DB commands ──────────────────────────────────────────────────────────────
