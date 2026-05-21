@@ -19,6 +19,7 @@ import {
   getFileDownloader,
   subscribeToDriveEvents,
   getNode,
+  findOrCreateFolder,
 } from "./drive";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -42,6 +43,14 @@ interface FileState {
   syncState: string;
 }
 
+// ── Config ───────────────────────────────────────────────────────────────────
+
+/**
+ * Name of the Drive folder used for testing. Only files directly inside this
+ * folder are synced — everything else on Drive is untouched.
+ */
+export const SYNC_FOLDER_NAME = "LinuxSyncTest";
+
 // ── Module-level state ───────────────────────────────────────────────────────
 
 /** path → timestamp until which inotify events are suppressed */
@@ -51,6 +60,13 @@ const suppressUntil = new Map<string, number>();
 const recentlyUploaded = new Set<string>();
 
 const SUPPRESS_MS = 5_000;
+
+/** UID of the remote Drive folder we sync against (resolved once on startup). */
+let _syncFolderUid: string | null = null;
+
+export function getSyncFolderUid(): string | null {
+  return _syncFolderUid;
+}
 
 let _status: SyncStatus = { active: [], errors: [] };
 let _statusCallback: ((s: SyncStatus) => void) | null = null;
@@ -100,6 +116,38 @@ function isSuppressed(absPath: string): boolean {
   return false;
 }
 
+// ── Sync folder resolution ───────────────────────────────────────────────────
+
+/**
+ * Resolves the remote Drive folder UID for SYNC_FOLDER_NAME, creating the
+ * folder if it doesn't exist. Caches the result in the DB so it survives
+ * restarts without an extra API round-trip.
+ */
+async function resolveSyncFolder(): Promise<string> {
+  // Check DB cache first.
+  const cached = await invoke<string | null>("get_db_sync_config", { key: "sync_folder_uid" });
+  if (cached) {
+    _syncFolderUid = cached;
+    return cached;
+  }
+
+  const rootResult = await getSyncRoot();
+  if (!rootResult.ok) {
+    throw new Error("Could not get Drive root: " + String(rootResult.error));
+  }
+
+  const folderResult = await findOrCreateFolder(rootResult.value, SYNC_FOLDER_NAME);
+  if (!folderResult.ok) {
+    throw new Error("Could not find/create sync folder: " + String(folderResult.error));
+  }
+
+  const uid = folderResult.value.uid;
+  await invoke("set_db_sync_config", { key: "sync_folder_uid", value: uid });
+  _syncFolderUid = uid;
+  console.log("[sync] Sync folder resolved:", SYNC_FOLDER_NAME, "→", uid);
+  return uid;
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -110,6 +158,9 @@ function isSuppressed(absPath: string): boolean {
  */
 export async function startSync(syncRoot: string): Promise<() => void> {
   console.log("[sync] Starting sync engine, syncRoot:", syncRoot);
+
+  // Resolve (or create) the test folder before accepting any events.
+  await resolveSyncFolder();
 
   // Subscribe to remote Drive events.
   const subscription = await subscribeToDriveEvents(async (event: DriveEvent) => {
@@ -193,19 +244,17 @@ async function handleLocalUpsert(absPath: string, _syncRoot: string): Promise<vo
 
     const filename = absPath.split("/").pop() ?? absPath;
 
-    // Get sync root.
-    const rootResult = await getSyncRoot();
-    if (!rootResult.ok) {
-      throw new Error("Could not get sync root: " + String(rootResult.error));
+    // Upload into the test sync folder (never the Drive root).
+    if (!_syncFolderUid) {
+      throw new Error("Sync folder not resolved — cannot upload");
     }
-    const rootUid = rootResult.value.uid;
 
     // Build a File object from the raw bytes.
     const blob = new Blob([bytes]);
     const file = new File([blob], filename, { lastModified: Date.now() });
 
     // Upload.
-    const uploader = await getFileUploader(rootUid, filename, {
+    const uploader = await getFileUploader(_syncFolderUid, filename, {
       mediaType: "application/octet-stream",
       expectedSize: bytes.length,
       modificationTime: new Date(),
@@ -271,6 +320,12 @@ async function handleRemoteNodeUpdate(nodeUid: string, syncRoot: string): Promis
       return;
     }
     const node = nodeResult.value;
+
+    // Only handle nodes that live directly inside the test sync folder.
+    if (node.parentUid !== _syncFolderUid) {
+      console.log("[sync] skipping node outside sync folder:", nodeUid, "parent:", node.parentUid);
+      return;
+    }
 
     // Only handle files in MVP.
     if (node.type !== NodeType.File) {

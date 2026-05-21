@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { LoginForm } from "./components/LoginForm";
 import { initDriveClient, deriveKeyPassword, releaseDriveClient } from "./lib/drive";
-import { startSync, setSyncStatusCallback } from "./lib/sync";
+import { startSync, setSyncStatusCallback, SYNC_FOLDER_NAME } from "./lib/sync";
 import type { SyncStatus } from "./lib/sync";
 import "./App.css";
 
@@ -234,7 +234,10 @@ function MainView() {
           </span>
         </div>
         <div className="sync-path">
-          Mappe: <code>{syncPath || "laster…"}</code>
+          Lokal mappe: <code>{syncPath || "laster…"}</code>
+        </div>
+        <div className="sync-path">
+          Drive-mappe: <code>My files / {SYNC_FOLDER_NAME}</code>
         </div>
         {syncStatus.active.length > 0 && (
           <ul style={{ margin: "0.4rem 0 0", padding: "0 0 0 1.2rem", fontSize: "0.82rem" }}>

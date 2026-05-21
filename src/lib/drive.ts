@@ -6,13 +6,13 @@ import {
   MemoryCache,
   NullFeatureFlagProvider,
   ProtonDriveClient,
+  NodeType,
   type DriveListener,
   type EventSubscription,
   type FileDownloader,
   type FileUploader,
   type MaybeNode,
   type NodeOrUid,
-  type NodeType,
   type UploadMetadata,
 } from "@protontech/drive-sdk";
 
@@ -116,6 +116,22 @@ export async function createFolder(
   modificationTime?: Date,
 ): Promise<MaybeNode> {
   return getDriveClient().createFolder(parentNodeUid, name, modificationTime);
+}
+
+/**
+ * Finds an existing folder by name under the given parent, or creates it.
+ * Returns the folder's MaybeNode.
+ */
+export async function findOrCreateFolder(
+  parentUid: NodeOrUid,
+  name: string,
+): Promise<MaybeNode> {
+  for await (const child of getDriveClient().iterateFolderChildren(parentUid, { type: NodeType.Folder })) {
+    if (child.ok && child.value.name === name) {
+      return child;
+    }
+  }
+  return getDriveClient().createFolder(parentUid, name);
 }
 
 /**
