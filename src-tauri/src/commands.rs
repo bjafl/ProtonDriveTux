@@ -1,8 +1,10 @@
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 
 use crate::auth::{AuthSession, ProtonAuth};
+use crate::db::{Db, FileState};
 use crate::keyring;
 
 pub struct AppState {
@@ -185,4 +187,96 @@ pub fn close_captcha_window(app: tauri::AppHandle) {
 #[tauri::command]
 pub async fn captcha_debug(msg: String, app: tauri::AppHandle) -> Result<(), String> {
     app.emit("captcha-debug", msg).map_err(|e| e.to_string())
+}
+
+// ── DB commands ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_all_file_states(db: State<'_, Db>) -> Result<Vec<FileState>, String> {
+    db.all_files().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn upsert_file_state(
+    remote_id: String,
+    local_path: String,
+    etag: Option<String>,
+    modified_at: Option<i64>,
+    size_bytes: Option<i64>,
+    sync_state: String,
+    db: State<'_, Db>,
+) -> Result<(), String> {
+    let state = FileState {
+        remote_id,
+        local_path,
+        etag,
+        modified_at,
+        size_bytes,
+        sync_state,
+    };
+    db.upsert_file(&state).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_file_sync_state(
+    remote_id: String,
+    sync_state: String,
+    db: State<'_, Db>,
+) -> Result<(), String> {
+    db.set_sync_state(&remote_id, &sync_state)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_file_state_by_remote_id(
+    remote_id: String,
+    db: State<'_, Db>,
+) -> Result<Option<FileState>, String> {
+    db.get_by_remote_id(&remote_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_db_sync_config(key: String, db: State<'_, Db>) -> Result<Option<String>, String> {
+    db.get_sync_config(&key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_db_sync_config(
+    key: String,
+    value: String,
+    db: State<'_, Db>,
+) -> Result<(), String> {
+    db.set_sync_config(&key, &value).map_err(|e| e.to_string())
+}
+
+// ── Local file I/O commands ──────────────────────────────────────────────────
+
+/// Reads a local file and returns its contents as a base64-encoded string.
+#[tauri::command]
+pub fn read_local_file(abs_path: String) -> Result<String, String> {
+    let bytes = std::fs::read(&abs_path).map_err(|e| format!("read {abs_path}: {e}"))?;
+    Ok(STANDARD.encode(&bytes))
+}
+
+/// Decodes a base64 string and writes it to a local file, creating parent dirs as needed.
+#[tauri::command]
+pub fn write_local_file(abs_path: String, content_b64: String) -> Result<(), String> {
+    let bytes = STANDARD
+        .decode(&content_b64)
+        .map_err(|e| format!("base64 decode: {e}"))?;
+    if let Some(parent) = std::path::Path::new(&abs_path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&abs_path, &bytes).map_err(|e| format!("write {abs_path}: {e}"))
+}
+
+/// Deletes a local file. Silently succeeds if the file does not exist.
+#[tauri::command]
+pub fn delete_local_file(abs_path: String) -> Result<(), String> {
+    match std::fs::remove_file(&abs_path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("remove_file {abs_path}: {e}")),
+    }
 }

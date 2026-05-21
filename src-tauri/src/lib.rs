@@ -1,12 +1,16 @@
 mod auth;
 mod commands;
+mod db;
 mod keyring;
 mod watcher;
 
 use commands::{
-    AppState, captcha_debug, close_captcha_window, get_auth_status, get_session_tokens, logout,
-    open_captcha_window, relay_captcha_token, restore_session_from_keyring, store_tokens,
+    AppState, captcha_debug, close_captcha_window, delete_local_file, get_all_file_states,
+    get_auth_status, get_db_sync_config, get_file_state_by_remote_id, get_session_tokens, logout,
+    open_captcha_window, read_local_file, relay_captcha_token, restore_session_from_keyring,
+    set_db_sync_config, set_file_sync_state, store_tokens, upsert_file_state, write_local_file,
 };
+use db::Db;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
@@ -27,6 +31,11 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .manage(AppState::new())
         .setup(|app| {
+            // Open SQLite DB and register it as managed state.
+            let data_dir = app.path().app_data_dir()?;
+            let db = Db::open(&data_dir).map_err(|e| tauri::Error::Anyhow(e.into()))?;
+            app.manage(db);
+
             setup_tray(app)?;
             setup_window_close_handler(app);
             start_file_watcher(app);
@@ -51,6 +60,15 @@ pub fn run() {
             relay_captcha_token,
             close_captcha_window,
             captcha_debug,
+            get_all_file_states,
+            upsert_file_state,
+            set_file_sync_state,
+            get_file_state_by_remote_id,
+            get_db_sync_config,
+            set_db_sync_config,
+            read_local_file,
+            write_local_file,
+            delete_local_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

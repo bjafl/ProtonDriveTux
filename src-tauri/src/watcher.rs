@@ -1,9 +1,17 @@
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
-use std::collections::HashSet;
+use serde::Serialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchEvent {
+    pub abs_path: String,
+    pub kind: String, // "create" | "modify" | "delete"
+}
 
 pub fn start_watcher(app: AppHandle, watch_path: PathBuf) {
     std::thread::spawn(move || {
@@ -37,9 +45,10 @@ pub fn start_watcher(app: AppHandle, watch_path: PathBuf) {
 
         eprintln!("[watcher] Lytter på {:?}", watch_path);
 
-        // Debounce: samle events i 300 ms-vinduer før vi emitter
+        // Debounce: samle events i 300 ms-vinduer før vi emitter.
+        // Value is the last-seen kind for the path.
         let debounce = Duration::from_millis(300);
-        let mut pending: HashSet<PathBuf> = HashSet::new();
+        let mut pending: HashMap<PathBuf, String> = HashMap::new();
         let mut deadline: Option<Instant> = None;
 
         loop {
@@ -49,19 +58,26 @@ pub fn start_watcher(app: AppHandle, watch_path: PathBuf) {
 
             match rx.recv_timeout(timeout) {
                 Ok(Ok(event)) => {
+                    let kind = match &event.kind {
+                        notify::EventKind::Create(_) => "create",
+                        notify::EventKind::Modify(_) => "modify",
+                        notify::EventKind::Remove(_) => "delete",
+                        _ => continue, // skip Access, Other, etc.
+                    };
                     for path in event.paths {
-                        pending.insert(path);
+                        pending.insert(path, kind.to_string());
                     }
                     deadline = Some(Instant::now() + debounce);
                 }
                 Ok(Err(e)) => eprintln!("[watcher] Feil: {e}"),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if deadline.map(|d| Instant::now() >= d).unwrap_or(false) {
-                        for path in pending.drain() {
-                            let _ = app.emit(
-                                "sync://local-change",
-                                path.to_string_lossy().to_string(),
-                            );
+                        for (path, kind) in pending.drain() {
+                            let event = WatchEvent {
+                                abs_path: path.to_string_lossy().to_string(),
+                                kind,
+                            };
+                            let _ = app.emit("sync://local-change", event);
                         }
                         deadline = None;
                     }
