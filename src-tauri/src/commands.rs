@@ -135,14 +135,26 @@ pub async fn open_captcha_window(
 
     // In a standalone window window.parent === window, so postMessage to parent fires on self.
     // The verify app sends { type: 'HUMAN_VERIFICATION_SUCCESS', payload: { token, type } }.
-    // Note: ipc:// custom protocol is blocked by verify.proton.me's CSP; Tauri falls back to
-    // the postMessage IPC interface automatically, so invoke() still works.
+    //
+    // IPC note: verify.proton.me's connect-src CSP blocks ipc://, so the first invoke()
+    // attempt fails. Tauri then switches to the postMessage IPC fallback for all subsequent
+    // calls. We retry once in the catch handler — the retry succeeds via postMessage.
     let init_script = r#"
         (function() {
+            function relayToken(token, isRetry) {
+                window.__TAURI_INTERNALS__.invoke('relay_captcha_token', { token: token })
+                    .catch(function(err) {
+                        if (!isRetry) {
+                            relayToken(token, true);
+                        } else {
+                            console.error('[captcha] relay failed after retry:', err);
+                        }
+                    });
+            }
+
             window.addEventListener('message', function(e) {
                 if (e.data && e.data.type === 'HUMAN_VERIFICATION_SUCCESS' && e.data.payload && e.data.payload.token) {
-                    window.__TAURI_INTERNALS__.invoke('relay_captcha_token', { token: e.data.payload.token })
-                        .catch(function(err) { console.error('[captcha] relay failed:', err); });
+                    relayToken(e.data.payload.token, false);
                 }
             });
         })();
@@ -160,10 +172,15 @@ pub async fn open_captcha_window(
     Ok(())
 }
 
-/// Relays the solved captcha token from the captcha window to the main window.
+/// Relays the solved captcha token from the captcha window to the main window,
+/// then closes the captcha window.
 #[tauri::command]
 pub async fn relay_captcha_token(token: String, app: tauri::AppHandle) -> Result<(), String> {
-    app.emit("captcha-token", token).map_err(|e| e.to_string())
+    app.emit("captcha-token", token).map_err(|e| e.to_string())?;
+    if let Some(w) = app.get_webview_window("captcha") {
+        let _ = w.close();
+    }
+    Ok(())
 }
 
 /// Closes the captcha window if it is open.
