@@ -390,10 +390,20 @@ async function handleLocalUpsert(
 
     if (existing) {
       // Upload a new revision of the existing Drive node.
-      const uploader = await getFileRevisionUploader(existing.remoteId, metadata);
-      const controller = await uploader.uploadFromFile(file, [], () => {});
-      ({ nodeUid, nodeRevisionUid } = await controller.completion());
-      console.log("[sync] uploaded revision:", absPath, "→", nodeUid, "rev:", nodeRevisionUid);
+      try {
+        const uploader = await getFileRevisionUploader(existing.remoteId, metadata);
+        const controller = await uploader.uploadFromFile(file, [], () => {});
+        ({ nodeUid, nodeRevisionUid } = await controller.completion());
+        console.log("[sync] uploaded revision:", absPath, "→", nodeUid, "rev:", nodeRevisionUid);
+      } catch (err) {
+        const msg = String(err);
+        if (msg.includes("not enabled for Documents") || msg.includes("Revision is currently")) {
+          // Proton Docs nodes don't support revision uploads — skip silently.
+          console.log("[sync] skipping Docs node (revision upload not supported):", absPath);
+          return;
+        }
+        throw err;
+      }
     } else {
       // Upload a brand-new file.
       const uploader = await getFileUploader(_syncFolderUid, filename, metadata);
