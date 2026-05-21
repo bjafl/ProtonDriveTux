@@ -113,6 +113,26 @@ impl Db {
         .optional()
     }
 
+    pub fn get_by_local_path(&self, local_path: &str) -> Result<Option<FileState>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT remote_id, local_path, etag, modified_at, size_bytes, sync_state
+             FROM files WHERE local_path = ?1",
+            params![local_path],
+            |row| {
+                Ok(FileState {
+                    remote_id: row.get(0)?,
+                    local_path: row.get(1)?,
+                    etag: row.get(2)?,
+                    modified_at: row.get(3)?,
+                    size_bytes: row.get(4)?,
+                    sync_state: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+    }
+
     pub fn delete_by_remote_id(&self, remote_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(

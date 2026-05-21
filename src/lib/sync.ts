@@ -165,6 +165,17 @@ async function handleLocalUpsert(absPath: string, _syncRoot: string): Promise<vo
   const label = absPath;
   markActive(label);
   try {
+    // Guard: if this path is already tracked in the DB, skip the upload.
+    // Uploading a file we already synced would create a duplicate node on Drive.
+    // Revision-based updates can be added once the sync logic is proven correct.
+    const existing = await invoke<FileState | null>("get_file_state_by_local_path", {
+      localPath: absPath,
+    });
+    if (existing) {
+      console.log("[sync] skipping upload — path already tracked (remoteId:", existing.remoteId, "):", absPath);
+      return;
+    }
+
     // Read file as base64.
     let contentB64: string;
     try {
@@ -321,7 +332,7 @@ async function handleRemoteNodeUpdate(nodeUid: string, syncRoot: string): Promis
   }
 }
 
-async function handleRemoteDelete(nodeUid: string, _syncRoot: string): Promise<void> {
+async function handleRemoteDelete(nodeUid: string, syncRoot: string): Promise<void> {
   try {
     const fileState = await invoke<FileState | null>("get_file_state_by_remote_id", {
       remoteId: nodeUid,
@@ -333,10 +344,11 @@ async function handleRemoteDelete(nodeUid: string, _syncRoot: string): Promise<v
     }
 
     suppressPath(fileState.localPath);
-    await invoke("delete_local_file", { absPath: fileState.localPath });
+    // Move to trash instead of permanently deleting — safeguard while sync logic is unverified.
+    await invoke("trash_local_file", { absPath: fileState.localPath, syncRoot });
     await invoke("set_file_sync_state", { remoteId: nodeUid, syncState: "deleted" });
 
-    console.log("[sync] deleted local file:", fileState.localPath, "(remote:", nodeUid, ")");
+    console.log("[sync] trashed local file:", fileState.localPath, "(remote:", nodeUid, ")");
   } catch (err) {
     console.error("[sync] remote delete failed for", nodeUid, err);
     recordError(nodeUid, String(err));

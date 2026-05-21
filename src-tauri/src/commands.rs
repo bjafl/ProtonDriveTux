@@ -236,6 +236,14 @@ pub fn get_file_state_by_remote_id(
 }
 
 #[tauri::command]
+pub fn get_file_state_by_local_path(
+    local_path: String,
+    db: State<'_, Db>,
+) -> Result<Option<FileState>, String> {
+    db.get_by_local_path(&local_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn get_db_sync_config(key: String, db: State<'_, Db>) -> Result<Option<String>, String> {
     db.get_sync_config(&key).map_err(|e| e.to_string())
 }
@@ -269,6 +277,32 @@ pub fn write_local_file(abs_path: String, content_b64: String) -> Result<(), Str
             .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
     }
     std::fs::write(&abs_path, &bytes).map_err(|e| format!("write {abs_path}: {e}"))
+}
+
+/// Moves a local file into `{sync_root}/.trash/` instead of permanently deleting it.
+/// Creates the trash directory as needed. Silently succeeds if the source does not exist.
+#[tauri::command]
+pub fn trash_local_file(abs_path: String, sync_root: String) -> Result<(), String> {
+    let src = std::path::Path::new(&abs_path);
+    if !src.exists() {
+        return Ok(());
+    }
+    let trash_dir = std::path::Path::new(&sync_root).join(".trash");
+    std::fs::create_dir_all(&trash_dir)
+        .map_err(|e| format!("create trash dir: {e}"))?;
+
+    let filename = src
+        .file_name()
+        .ok_or_else(|| format!("no filename in {abs_path}"))?;
+    // Append a timestamp so repeated deletes of the same name don't collide.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let dest_name = format!("{}.{ts}", filename.to_string_lossy());
+    let dest = trash_dir.join(dest_name);
+
+    std::fs::rename(src, &dest).map_err(|e| format!("rename {abs_path} → {}: {e}", dest.display()))
 }
 
 /// Deletes a local file. Silently succeeds if the file does not exist.
