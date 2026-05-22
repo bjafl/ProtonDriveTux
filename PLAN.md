@@ -1,244 +1,162 @@
 # PLAN — Proton Drive Linux Sync Client
 
-Fra nåværende Tauri v2-skjelett til fungerende beta.
-Opprettet: 2026-05-19
+*Updated: 2026-05-22*
 
 ---
 
-## Milepæler
+## Status
 
-| Fase | Mål | Status |
-|------|-----|--------|
-| 0 | Tauri shell: tray, inotify, konfig | ✅ |
-| 1 | SRP-innlogging + GNOME Keyring | ✅ |
-| 2 | JS SDK integrert, fil-transfer fungerer | 🔄 |
-| 3 | Bi-direksjonell sync-motor | 🔲 |
-| 4 | UI, notifications, autostart, AppImage | 🔲 |
+| Phase | Goal | Status |
+|-------|------|--------|
+| 0 | Tauri shell: tray, inotify, config | ✅ Done |
+| 1 | SRP login + GNOME Keyring | ✅ Done |
+| 2 | JS SDK integrated, file transfer | ✅ Done (except 2.6) |
+| 3 | Bidirectional sync engine | 🔄 In progress — core works, gaps below |
+| 4 | UI polish, notifications, autostart, AppImage | 🔄 Partial |
 
----
-
-## Fase 0 — Tauri shell
-
-**Mål:** Kjørbar app med tray-ikon og bevist inotify-pipeline.
-
-### 0.1 Konfigurer appen
-- [x] `tauri.conf.json`: rename `productName` → `Proton Drive Sync`, `identifier` → `net.flode.proton-drive-sync`
-- [x] `.env.local`: `PROTON_APP_VERSION=external-drive-protondrive_linux@0.1.0-alpha`
-
-### 0.2 System tray
-- [x] `tauri = { version = "2", features = ["tray-icon"] }` i Cargo.toml
-- [x] `lib.rs`: opprett tray-ikon ved oppstart med meny: **Åpne**, **Avslutt**
-- [x] Lukke vinduet → skjul til tray (ikke kill prosessen)
-- [x] `--minimized` CLI-flag: start uten å vise vinduet
-
-### 0.3 inotify smoke test
-- [x] Legg til `notify = "6"` i Cargo.toml
-- [x] Opprett `src-tauri/src/watcher.rs`: watch `~/ProtonDrive` med `RecommendedWatcher`
-- [x] Debounce events 300 ms (samle rask skriving til én event)
-- [x] Emit Tauri-event `sync://local-change` med path til frontend
-- [x] `lib.rs`: start watcher i bakgrunnen ved oppstart
-- [x] Frontend: vis siste mottatte event i UI (smoke test-visning)
-
-**Avhengigheter:** ingen
-**Blokkerer:** Fase 1
+What exists: login, unlock, onboarding, folder selection, conflict wizard,
+bidirectional sync with inotify + Drive events, token refresh, file revisions,
+rename handling, write-stability check, trash-based deletes, SQLite state.
 
 ---
 
-## Fase 1 — SRP-autentisering + Keyring
+## Bugs / Gaps — must fix for correct sync
 
-**Mål:** Bruker kan logge inn med Proton-konto. Tokens lagres i GNOME Keyring.
+### G1. `initialSyncLocalFolder` only scans top-level files
 
-### 1.1 SRP-implementasjon (Rust)
-- [ ] Legg til `srp`, `sha2`, `bcrypt`, `num-bigint` i Cargo.toml
-- [ ] Opprett `src-tauri/src/auth.rs`:
-  - `GET /auth/info?Username={user}` → hent salt, server_ephemeral, srpSession
-  - Beregn SRP client proof (bcrypt-salt + SHA-512)
-  - `POST /auth` → access_token, refresh_token, UID
-  - `POST /auth/2fa` hvis TOTP aktivert
-- [ ] Alle requests setter `x-pm-appversion`-header (fra env)
-- [ ] Legg til `reqwest` (async HTTP) i Cargo.toml
-
-### 1.2 GNOME Keyring
-- [ ] Legg til `secret-service` crate i Cargo.toml
-- [ ] Opprett `src-tauri/src/keyring.rs`:
-  - `store_session(uid, access_token, refresh_token)`
-  - `load_session()` → `Option<Session>`
-  - `clear_session()`
-- [ ] Token refresh: if 401, prøv refresh endpoint, oppdater keyring
-
-### 1.3 IPC-kommandoer (auth)
-- [ ] Opprett `src-tauri/src/commands.rs`:
-  - `login(username, password, totp?) -> Result<(), AuthError>`
-  - `logout() -> Result<(), AuthError>`
-  - `get_auth_status() -> AuthStatus` (`LoggedIn` | `LoggedOut`)
-- [ ] Registrer i `generate_handler!`
-
-### 1.4 Login UI
-- [ ] Opprett `src/components/LoginForm.tsx`: brukernavn, passord, valgfri TOTP
-- [ ] Vis tydelig: _"Dette er en uoffisiell tredjepartsapp ikke støttet av Proton."_
-- [ ] Håndter feil: feil passord, 2FA påkrevd, nettverksfeil
-
-**Avhengigheter:** Fase 0
-**Blokkerer:** Fase 2
+**Where:** `src/lib/sync.ts` → `initialSyncLocalFolder`  
+**Problem:** Calls `list_local_dir` (flat) for every watched folder entry.
+For `recursive` folders this means subdirectory files are not uploaded on startup.
+The inotify watcher covers them once the app is running, but a cold start misses
+everything in subdirectories.  
+**Fix:** For each entry where `selectedRoot.mode === "recursive"`, call
+`list_dir_recursive` instead of `list_local_dir`. The returned `LocalFileEntry[]`
+already has `rel_path` and `abs_path` — use `abs_path` as the argument to
+`handleLocalUpsert`.
 
 ---
 
-## Fase 2 — JS SDK-integrasjon
+### G2. Large file memory: full base64 round-trip
 
-**Mål:** SDK initialisert og fil kan lastes opp/ned manuelt.
-
-### 2.1 Bygg og wire SDK
-- [x] Bygg SDK: `cd ../sdk/js/sdk && npm install && npm run build`
-- [x] Legg til SDK som lokal dependency i `package.json`:
-  ```json
-  "@protontech/drive-sdk": "file:../sdk/js/sdk"
-  ```
-- [x] Installer `@protontech/crypto` (peer dependency)
-
-### 2.2 HTTP-klient wrapper
-- [x] Opprett `src/lib/httpClient.ts`: implementer `ProtonDriveHTTPClient`
-  - Setter `x-pm-appversion`-header på alle requests
-  - Setter `Authorization: Bearer {access_token}` fra session
-  - `fetchJson` og `fetchBlob` med timeout og AbortSignal-støtte
-
-### 2.3 Account provider
-- [x] Opprett `src/lib/accountProvider.ts`: implementer `ProtonDriveAccount`
-  - `getOwnPrimaryAddress()`: kall `/core/v4/addresses` med session tokens
-  - `getOwnAddresses()`: alle adresser
-  - `getOwnAddress(emailOrId)`: filtrer
-  - `hasProtonAccount(email)`: kall `/core/v4/users/available` eller lignende
-  - `getPublicKeys(email)`: kall `/core/v4/keys?Email={email}`
-  - Dekrypter adressenøkler med key_password (avledet fra user password + key salt)
-
-### 2.4 Crypto-modul
-- [x] Opprett `src/lib/cryptoModule.ts`: init `CryptoProxy` fra `@protontech/crypto`
-  - Bruker `Api` (direkte, ikke WebWorker) — passende for Tauri WebView
-  - Opprett `src/lib/srpModule.ts`: implementer `SRPModule` via `@protontech/crypto/srp`
-
-### 2.5 SDK-wrapper (drive.ts)
-- [x] Opprett `src/lib/drive.ts`: **alt SDK-kall skjer herfra**
-  - `initDriveClient(session)` → `ProtonDriveClient`
-  - `deriveKeyPassword(password, accessToken, uid)` → kaller `/core/v4/keys/salts`
-  - `subscribeToDriveEvents(listener)` → `EventSubscription`
-  - `getSyncRoot()`, `listFolderChildren()`, `getFileUploader()`, `getFileDownloader()`
-- [x] Login-flyt returnerer `{uid, accessToken}` fra Rust → JS avleder `keyPassword`
-- [x] Unlock-skjerm ved session-restore fra keyring (passord re-innskrives)
-
-### 2.6 Smoke test upload/download
-- [ ] Legg til en "Test opplasting"-knapp i UI
-- [ ] Last opp en liten testfil til rot-mappen
-- [ ] Last ned igjen og verifiser innhold
-
-**Avhengigheter:** Fase 1
-**Blokkerer:** Fase 3
+**Where:** `src/lib/sync.ts` → `handleLocalUpsert` (lines ~337–349),
+`src-tauri/src/commands.rs` → `read_local_file` / `write_local_file`  
+**Problem:** `read_local_file` reads the whole file into RAM as bytes, base64-encodes
+it, returns a string across IPC; JS decodes with `atob()` into a second buffer.
+A 500 MB file doubles its footprint twice. SDK uploaders support `File` objects
+which the browser can stream from a URL/blob.  
+**Fix (MVP):** Add a `read_local_file_chunked(abs_path, offset, len)` command and
+stream chunks into a `ReadableStream` fed to the SDK uploader, or use
+`tauri://localhost/...` asset protocol to serve local files directly as a URL.  
+**Fix (stretch):** Register a custom Tauri protocol handler `pd-file://` that
+streams file bytes on demand — the SDK uploader receives a URL and streams without
+buffering.
 
 ---
 
-## Fase 3 — Bi-direksjonell sync-motor
+### G3. Watcher has no stop channel
 
-**Mål:** Endringer i lokal mappe synkroniseres automatisk, og remote-endringer lastes ned.
-
-### 3.1 SQLite state-database
-- [ ] Legg til `rusqlite` i Cargo.toml
-- [ ] Opprett `src-tauri/src/db.rs`:
-  - Opprett tabeller `files` og `sync_config` (se CLAUDE.md for schema)
-  - `upsert_file(remote_id, local_path, etag, size, state)`
-  - `get_file_by_remote_id(id)`, `get_file_by_local_path(path)`
-  - `set_sync_config(key, value)`, `get_sync_config(key)`
-  - `get_pending_uploads()`, `get_pending_downloads()`
-
-### 3.2 Sync-motor (sync.rs)
-- [ ] Opprett `src-tauri/src/sync.rs`:
-  - `SyncEngine` struct med `AppHandle`, DB-referanse, mpsc-kanal
-  - Lokal→remote flyt:
-    1. Mottar `LocalChange` fra watcher (debounced)
-    2. Sjekk mot DB: ny fil, endret eller slettet?
-    3. Les fil → send til `drive.ts` via IPC → upload
-    4. Oppdater DB: `sync_state = synced`, lagre `etag`
-  - Remote→lokal flyt:
-    1. Mottar `DriveEvent` fra SDK (`NodeCreated`, `NodeUpdated`, `NodeDeleted`)
-    2. Sammenlign `etag` mot DB
-    3. Dersom endret: last ned via SDK, skriv til lokal sti
-    4. Oppdater DB
-
-### 3.3 Event-bro Rust ↔ JS
-- [ ] IPC-kommando: `start_sync(local_root: String) -> Result<(), SyncError>`
-- [ ] IPC-kommando: `stop_sync()`
-- [ ] IPC-kommando: `get_sync_status() -> SyncStatus`
-- [ ] Tauri-event `sync://status-changed` → frontend oppdaterer UI
-- [ ] Tauri-event `sync://error` → frontend viser feilmelding
-
-### 3.4 Konfliktdeteksjon (v1: last-write-wins)
-- [ ] Hvis lokal og remote er endret siden siste sync: velg nyeste `modified_at`
-- [ ] Sett `sync_state = conflict` i DB (logg, men fortsett)
-- [ ] Dokumenter som kjent begrensning
-
-### 3.5 Feilhåndtering og retry
-- [ ] Nettverksfeil: exponential backoff (1s, 2s, 4s, max 60s)
-- [ ] Persistent feil (3 forsøk): sett `sync_state = error`, emit event til UI
-- [ ] Rate limiting (429): respekter `Retry-After`-header
-
-**Avhengigheter:** Fase 2
-**Blokkerer:** Fase 4
+**Where:** `src-tauri/src/watcher.rs`, `src-tauri/src/commands.rs` → `start_file_watcher`  
+**Problem:** `start_file_watcher` spawns a thread with a `RecommendedWatcher` and
+returns. There is no way to stop it. Calling `start_file_watcher` a second time
+(e.g. after the user changes the sync root in settings) starts a second watcher;
+both run indefinitely, emitting duplicate events.  
+**Fix:** Pass an `Arc<AtomicBool>` stop flag into the watcher thread. Expose a
+`stop_file_watcher` Tauri command that sets the flag. Store the current stop flag
+in `AppState` so re-triggering first stops the old watcher.
 
 ---
 
-## Fase 4 — UI, notifications, autostart
+### G4. Deleting a local file does not delete it from Drive
 
-**Mål:** Polert brukeropplevelse, klar for beta-distribusjon.
-
-### 4.1 Status-UI
-- [ ] Opprett `src/components/SyncStatus.tsx`:
-  - Viser: synkroniserer / oppdatert / feil / pauset
-  - Liste over siste sync-hendelser (n siste)
-  - Knapp: Pause / Fortsett sync
-
-### 4.2 Innstillinger
-- [ ] Opprett `src/components/Settings.tsx`:
-  - Velg lokal sync-mappe (fil-dialog via `tauri-plugin-dialog`)
-  - Vis konto-info (e-post, lagringsforbruk)
-  - Logg ut
-
-### 4.3 Desktop-notifikasjoner
-- [ ] Legg til `notify-rust` i Cargo.toml
-- [ ] Notifiser ved: fullført opplasting av stor fil (>10 MB), sync-feil, konflikter
-
-### 4.4 Autostart
-- [ ] Opprett `~/.config/autostart/proton-drive-sync.desktop` ved første oppstart
-- [ ] Start med `--minimized` flag
-
-### 4.5 AppImage-bygg
-- [ ] Verifiser `cargo tauri build` → AppImage genereres
-- [ ] Test installasjon på ren Ubuntu 22.04
-- [ ] Dokumenter avhengigheter: `libayatana-appindicator3-1`, `libwebkit2gtk-4.1`
-
-**Avhengigheter:** Fase 3
+**Where:** `src/lib/sync.ts` → `handleLocalChange`  
+**Problem:** When `kind === "delete"` we log "skipping local delete (MVP safety)"
+and return. The file stays in Drive forever.  
+**Fix:** Look up the `remote_id` from the DB by `local_path`. Call the SDK delete
+API (check `drive.ts` — likely need a `deleteNode(uid)` export). On success, remove
+the DB row. Keep the "MVP safety" guard as a config flag initially; default it off
+so deletes are synced.
 
 ---
 
-## Tekniske noter
+## Remaining feature work
 
-### Kritiske avhengigheter (Cargo.toml)
-```toml
-notify = "6"
-tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
-rusqlite = { version = "0.31", features = ["bundled"] }
-secret-service = "3"
-notify-rust = "4"
-thiserror = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-```
+### Phase 2 — remaining
 
-### SDK breaking change (slutten 2026/tidlig 2027)
-Ny crypto-modell kommer. All SDK-kontakt isolert i `src/lib/drive.ts` — oppdatering krever bare endringer der.
+**2.6 Smoke test button (low priority)**  
+A "Test upload" button in MainView that uploads a tiny temp file to Drive root and
+reads it back, confirming end-to-end crypto + transfer works. Useful for debugging.
+Can be removed before v1 release.
 
-### GNOME tray
-Krever `gnome-shell-extension-appindicator` (Ubuntu: installert som standard fra 22.04).
-Fallback: vis statusvindu dersom tray ikke tilgjengelig.
+---
 
-### Sikkerhet
-- Aldri lagre passord — kun session tokens i keyring
-- SRP: følg WebClients-implementasjonen nøye, ikke improviser krypto
-- `x-pm-appversion` settes alltid: `external-drive-protondrive_linux@{ver}-alpha`
+### Phase 3 — remaining
+
+**3.1 Sync pause / resume**  
+Add a stop-sync path: unsubscribe from Drive events, stop the local watcher,
+set a `paused` flag so inotify events are dropped. Resume: restart watcher + resubscribe.
+Expose `pause_sync` / `resume_sync` Tauri commands. Show pause/resume button in MainView.
+
+**3.2 Retry / backoff for upload/download errors**  
+Transient network errors currently surface as errors in the status list and are not
+retried. Add an exponential backoff queue (1 s → 2 s → 4 s → … max 60 s, max 3 retries)
+before marking `sync_state = error`. The SDK already retries internally on some errors;
+this wraps the outer `handleLocalUpsert` / `handleRemoteNodeUpdate` calls.
+
+**3.3 Concurrent uploads (p-limit)**  
+All uploads are sequential (one `await handleLocalUpsert` at a time). Add `p-limit`
+(or equivalent) to run e.g. 3 uploads in parallel. Requires a shared counter so
+`markActive` labels remain meaningful.
+
+---
+
+### Phase 4 — remaining
+
+**4.1 MainView: show selected Drive folders, not "My Files"**  
+`src/App.tsx` / `src/components/MainView` currently shows a hardcoded "Drive-mappe"
+label. Replace with the list of selected folder names from `selectedFolders` state
+(read from DB via `get_db_sync_config("selected_folders")`).
+
+**4.2 Settings: re-run onboarding / change sync root**  
+"Change sync settings" button exists in MainView but it re-runs the full onboarding
+wizard, which restarts from the welcome screen. Improve: jump directly to the
+local-root or folder-select step. Also: when the user changes the local root,
+stop the watcher on the old path (see G3), start it on the new path, and clear
+the `files` DB table so initial sync re-discovers everything.
+
+**4.3 AppImage build verification**  
+Run `cargo tauri build` end-to-end on a clean Ubuntu 22.04 machine or container.
+Document the exact `apt` packages needed: `libwebkit2gtk-4.1-dev`,
+`libayatana-appindicator3-dev`, `libssl-dev`. Produce a working `.AppImage`.
+
+**4.4 Desktop notification on sync error**  
+`show_notification` command exists. Wire it: when `sync_state = error` is set for
+a file, emit a notification with the file name and error. Rate-limit: max 1
+notification per 30 s to avoid spam.
+
+---
+
+## Deferred (conscious decisions, not forgotten)
+
+| Item | Reason deferred | Revisit |
+|------|----------------|---------|
+| Concurrent uploads (3.3) | Sequential is safe; ordering bugs are worse than slow | After basic sync is stable |
+| Runtime conflict wizard | Last-write-wins is documented v1 policy | Phase 3 follow-up |
+| File picker "Browse" button | Requires `tauri-plugin-dialog`; text input works | Phase 4 |
+| GNOME tray without extension | `gnome-shell-extension-appindicator` standard on Ubuntu 22.04+ | Known limitation |
+| Address key COMPROMISED flag | Low risk for personal single-user use | Before any multi-user use |
+| Token TTL persistence across restores | First 401 triggers refresh anyway (G1 fixed) | After token refresh is battle-tested |
+| Drive tree rename staleness | `drivePath` rebuilt on each startup during `buildWatchedFolderMap` | Already partially mitigated |
+| SDK breaking change (new crypto model, ETA late 2026) | All SDK calls isolated behind `src/lib/drive.ts` | When Proton publishes new SDK |
+
+---
+
+## Architecture notes
+
+- All SDK calls go through `src/lib/drive.ts` — the isolation boundary for the coming SDK crypto change.
+- All Tauri commands are in `src-tauri/src/commands.rs`. Register new ones in `lib.rs` `invoke_handler![]`.
+- Pure business logic (selection state machine, conflict helpers, path matching, translations) lives in
+  `src/lib/{folderTreeHelpers,conflictHelpers,syncHelpers,translations}.ts` — no Tauri/SDK imports,
+  fully unit-tested.
+- SQLite schema: `files` table (remote state) + `sync_config` table (key/value settings).
+- Security invariants: never store passwords, only session tokens; always send `x-pm-appversion` header;
+  no direct Proton API calls outside the SDK.
