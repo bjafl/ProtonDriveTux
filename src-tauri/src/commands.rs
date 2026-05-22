@@ -764,6 +764,172 @@ mod tests {
         assert!(out[0].mtime_ms > 0);
     }
 
+    // ── list_local_dir ────────────────────────────────────────────────────────
+
+    #[test]
+    fn list_local_dir_returns_only_files_not_dirs() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("file.txt"), "data").unwrap();
+        fs::create_dir(dir.path().join("subdir")).unwrap();
+
+        let result = list_local_dir(dir.path().to_string_lossy().into_owned()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].ends_with("file.txt"));
+    }
+
+    #[test]
+    fn list_local_dir_empty_dir_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        let result = list_local_dir(dir.path().to_string_lossy().into_owned()).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn list_local_dir_errors_on_nonexistent_path() {
+        assert!(list_local_dir("/nonexistent/path/zzzz".to_string()).is_err());
+    }
+
+    // ── read_local_file / write_local_file ────────────────────────────────────
+
+    #[test]
+    fn write_and_read_local_file_round_trips() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bin").to_string_lossy().into_owned();
+        let original = b"hello world \x00\xff";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(original);
+
+        write_local_file(path.clone(), encoded).unwrap();
+        let result_b64 = read_local_file(path).unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(result_b64)
+            .unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn write_local_file_creates_parent_dirs() {
+        let dir = TempDir::new().unwrap();
+        let path = dir
+            .path()
+            .join("a/b/c/file.txt")
+            .to_string_lossy()
+            .into_owned();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"data");
+        write_local_file(path.clone(), encoded).unwrap();
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    #[test]
+    fn read_local_file_errors_on_missing_file() {
+        assert!(read_local_file("/nonexistent/file.txt".to_string()).is_err());
+    }
+
+    #[test]
+    fn write_local_file_rejects_invalid_base64() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("out.txt").to_string_lossy().into_owned();
+        assert!(write_local_file(path, "not!valid!base64!!!".to_string()).is_err());
+    }
+
+    // ── delete_local_file ─────────────────────────────────────────────────────
+
+    #[test]
+    fn delete_local_file_removes_existing_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("del.txt");
+        fs::write(&path, "bye").unwrap();
+        delete_local_file(path.to_string_lossy().into_owned()).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn delete_local_file_succeeds_silently_on_missing() {
+        assert!(delete_local_file("/tmp/proton_test_missing_zzzz.txt".to_string()).is_ok());
+    }
+
+    // ── rename_local_file ─────────────────────────────────────────────────────
+
+    #[test]
+    fn rename_local_file_moves_the_file() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("old.txt");
+        let dst = dir.path().join("new.txt");
+        fs::write(&src, "content").unwrap();
+        rename_local_file(
+            src.to_string_lossy().into_owned(),
+            dst.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        assert!(!src.exists());
+        assert!(dst.exists());
+    }
+
+    #[test]
+    fn rename_local_file_errors_on_missing_source() {
+        let dir = TempDir::new().unwrap();
+        assert!(rename_local_file(
+            "/nonexistent/src.txt".to_string(),
+            dir.path().join("dst.txt").to_string_lossy().into_owned(),
+        )
+        .is_err());
+    }
+
+    // ── trash_local_file ─────────────────────────────────────────────────────
+
+    #[test]
+    fn trash_local_file_moves_file_to_trash_dir() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("important.txt");
+        fs::write(&file_path, "data").unwrap();
+
+        trash_local_file(
+            file_path.to_string_lossy().into_owned(),
+            dir.path().to_string_lossy().into_owned(),
+        )
+        .unwrap();
+
+        assert!(!file_path.exists());
+        let trash = dir.path().join(".trash");
+        let entries: Vec<_> = fs::read_dir(&trash).unwrap().flatten().collect();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].file_name().to_string_lossy().contains("important.txt"));
+    }
+
+    #[test]
+    fn trash_local_file_succeeds_silently_when_source_missing() {
+        let dir = TempDir::new().unwrap();
+        assert!(trash_local_file(
+            "/nonexistent/file.txt".to_string(),
+            dir.path().to_string_lossy().into_owned(),
+        )
+        .is_ok());
+    }
+
+    // ── stat_local_file ───────────────────────────────────────────────────────
+
+    #[test]
+    fn stat_local_file_returns_correct_size() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("sized.txt");
+        fs::write(&path, "12345").unwrap(); // 5 bytes
+        let stat = stat_local_file(path.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(stat.size_bytes, 5);
+    }
+
+    #[test]
+    fn stat_local_file_returns_positive_mtime() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("timed.txt");
+        fs::write(&path, "x").unwrap();
+        let stat = stat_local_file(path.to_string_lossy().into_owned()).unwrap();
+        assert!(stat.mtime_ms > 0);
+    }
+
+    #[test]
+    fn stat_local_file_errors_on_missing() {
+        assert!(stat_local_file("/nonexistent/missing.txt".to_string()).is_err());
+    }
+
     // ── validate_local_root ───────────────────────────────────────────────────
 
     #[test]

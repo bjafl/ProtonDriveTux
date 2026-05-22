@@ -181,3 +181,190 @@ impl Db {
         Ok(())
     }
 }
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_db() -> Db {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE files (
+                remote_id   TEXT PRIMARY KEY,
+                local_path  TEXT NOT NULL UNIQUE,
+                etag        TEXT,
+                modified_at INTEGER,
+                size_bytes  INTEGER,
+                sync_state  TEXT NOT NULL
+            );
+            CREATE TABLE sync_config (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        Db { conn: Mutex::new(conn) }
+    }
+
+    fn file(remote_id: &str, local_path: &str) -> FileState {
+        FileState {
+            remote_id: remote_id.to_string(),
+            local_path: local_path.to_string(),
+            etag: None,
+            modified_at: None,
+            size_bytes: None,
+            sync_state: "synced".to_string(),
+        }
+    }
+
+    // ── upsert_file / get_by_remote_id ────────────────────────────────────────
+
+    #[test]
+    fn upsert_inserts_new_file() {
+        let db = make_db();
+        db.upsert_file(&file("r1", "/local/a.txt")).unwrap();
+        let result = db.get_by_remote_id("r1").unwrap();
+        assert!(result.is_some());
+        let f = result.unwrap();
+        assert_eq!(f.remote_id, "r1");
+        assert_eq!(f.local_path, "/local/a.txt");
+        assert_eq!(f.sync_state, "synced");
+    }
+
+    #[test]
+    fn upsert_overwrites_existing_file() {
+        let db = make_db();
+        db.upsert_file(&file("r1", "/local/a.txt")).unwrap();
+        let updated = FileState {
+            remote_id: "r1".to_string(),
+            local_path: "/local/a.txt".to_string(),
+            etag: Some("abc123".to_string()),
+            modified_at: Some(1_700_000_000),
+            size_bytes: Some(4096),
+            sync_state: "pending_upload".to_string(),
+        };
+        db.upsert_file(&updated).unwrap();
+        let result = db.get_by_remote_id("r1").unwrap().unwrap();
+        assert_eq!(result.etag, Some("abc123".to_string()));
+        assert_eq!(result.size_bytes, Some(4096));
+        assert_eq!(result.sync_state, "pending_upload");
+    }
+
+    #[test]
+    fn get_by_remote_id_returns_none_for_missing() {
+        let db = make_db();
+        assert!(db.get_by_remote_id("missing").unwrap().is_none());
+    }
+
+    // ── get_by_local_path ─────────────────────────────────────────────────────
+
+    #[test]
+    fn get_by_local_path_finds_inserted_file() {
+        let db = make_db();
+        db.upsert_file(&file("r1", "/sync/doc.pdf")).unwrap();
+        let result = db.get_by_local_path("/sync/doc.pdf").unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().remote_id, "r1");
+    }
+
+    #[test]
+    fn get_by_local_path_returns_none_for_missing() {
+        let db = make_db();
+        assert!(db.get_by_local_path("/nonexistent").unwrap().is_none());
+    }
+
+    // ── set_sync_state ────────────────────────────────────────────────────────
+
+    #[test]
+    fn set_sync_state_updates_existing_row() {
+        let db = make_db();
+        db.upsert_file(&file("r1", "/local/a.txt")).unwrap();
+        db.set_sync_state("r1", "conflict").unwrap();
+        let result = db.get_by_remote_id("r1").unwrap().unwrap();
+        assert_eq!(result.sync_state, "conflict");
+    }
+
+    #[test]
+    fn set_sync_state_no_op_for_missing_id() {
+        let db = make_db();
+        // Should succeed without error even if row doesn't exist
+        assert!(db.set_sync_state("ghost", "error").is_ok());
+    }
+
+    // ── delete_by_remote_id ───────────────────────────────────────────────────
+
+    #[test]
+    fn delete_by_remote_id_removes_the_row() {
+        let db = make_db();
+        db.upsert_file(&file("r1", "/local/a.txt")).unwrap();
+        db.delete_by_remote_id("r1").unwrap();
+        assert!(db.get_by_remote_id("r1").unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_by_remote_id_no_op_for_missing() {
+        let db = make_db();
+        assert!(db.delete_by_remote_id("ghost").is_ok());
+    }
+
+    // ── all_files ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn all_files_returns_empty_on_fresh_db() {
+        let db = make_db();
+        assert!(db.all_files().unwrap().is_empty());
+    }
+
+    #[test]
+    fn all_files_returns_all_rows_sorted_by_local_path() {
+        let db = make_db();
+        db.upsert_file(&file("r2", "/sync/z.txt")).unwrap();
+        db.upsert_file(&file("r1", "/sync/a.txt")).unwrap();
+        let files = db.all_files().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].local_path, "/sync/a.txt");
+        assert_eq!(files[1].local_path, "/sync/z.txt");
+    }
+
+    // ── sync_config ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn get_sync_config_returns_none_when_not_set() {
+        let db = make_db();
+        assert!(db.get_sync_config("local_root").unwrap().is_none());
+    }
+
+    #[test]
+    fn set_and_get_sync_config_round_trips() {
+        let db = make_db();
+        db.set_sync_config("local_root", "/home/user/ProtonDrive").unwrap();
+        let val = db.get_sync_config("local_root").unwrap();
+        assert_eq!(val, Some("/home/user/ProtonDrive".to_string()));
+    }
+
+    #[test]
+    fn set_sync_config_overwrites_existing_value() {
+        let db = make_db();
+        db.set_sync_config("key", "first").unwrap();
+        db.set_sync_config("key", "second").unwrap();
+        let val = db.get_sync_config("key").unwrap();
+        assert_eq!(val, Some("second".to_string()));
+    }
+
+    #[test]
+    fn set_sync_config_stores_independent_keys() {
+        let db = make_db();
+        db.set_sync_config("local_root", "/home/user/ProtonDrive").unwrap();
+        db.set_sync_config("volume_id", "vol-abc123").unwrap();
+        assert_eq!(
+            db.get_sync_config("local_root").unwrap(),
+            Some("/home/user/ProtonDrive".to_string())
+        );
+        assert_eq!(
+            db.get_sync_config("volume_id").unwrap(),
+            Some("vol-abc123".to_string())
+        );
+    }
+}
