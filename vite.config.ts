@@ -13,6 +13,13 @@ export default defineConfig(async () => ({
     environment: "node",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     globals: true,
+    coverage: {
+      provider: "v8",
+      include: ["src/lib/**/*.ts"],
+      exclude: ["src/lib/drive.ts", "src/lib/paths.ts"],
+      reporter: ["text", "json-summary"],
+      all: true,
+    },
   } satisfies UserConfig["test"],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

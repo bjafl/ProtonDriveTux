@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "coverage:rust": "cd src-tauri && cargo llvm-cov --lib --summary-only"
   },
   "dependencies": {
     "@protontech/crypto": "^2.0.0",
@@ -25,6 +27,7 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "@vitest/coverage-v8": "^4.1.7",
     "typescript": "6.0.3",
     "vite": "^7.0.4",
     "vitest": "^4.1.7"
