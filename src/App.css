@@ -397,3 +397,120 @@ code {
   border-color: var(--purple);
   color: var(--purple);
 }
+
+/* ── Onboarding ── */
+.onboarding-card {
+  max-width: 480px;
+}
+
+.onboarding-card--wide {
+  max-width: 680px;
+  width: 95vw;
+}
+
+.onboarding-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+/* ── Folder tree ── */
+.folder-tree-wrap {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.folder-tree,
+.folder-tree--nested {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.folder-tree--nested {
+  padding-left: 1.5rem;
+}
+
+.folder-tree-item {
+  margin: 0;
+}
+
+.folder-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0;
+}
+
+.folder-tree-expand,
+.folder-tree-select {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0 0.2rem;
+  line-height: 1;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  font-family: inherit;
+}
+
+.folder-tree-expand:hover { color: var(--text); }
+.folder-tree-select { font-size: 1rem; }
+.folder-tree-select:hover { opacity: 0.75; }
+
+.folder-tree-name {
+  font-size: 0.88rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.folder-tree-name:hover { text-decoration: underline; }
+
+/* ── Conflict wizard ── */
+.conflict-wizard { width: 100%; }
+
+.conflict-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.conflict-table-wrap {
+  overflow-x: auto;
+  margin: 0.75rem 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.conflict-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.conflict-table th,
+.conflict-table td {
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.conflict-table th {
+  background: var(--card-bg);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.conflict-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

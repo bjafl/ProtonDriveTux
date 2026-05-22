@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { LoginForm } from "./components/LoginForm";
+import { Onboarding, isOnboardingNeeded } from "./components/Onboarding";
 import { initDriveClient, deriveKeyPassword, refreshTokens, releaseDriveClient, setSessionExpiredCallback } from "./lib/drive";
 import { startSync, setSyncStatusCallback } from "./lib/sync";
 import { defaultSyncPath } from "./lib/paths";
@@ -42,7 +43,7 @@ interface FileState {
   syncState: string;
 }
 
-type AppState = "loading" | "unlocking" | "loggedOut" | "ready";
+type AppState = "loading" | "unlocking" | "loggedOut" | "onboarding" | "ready";
 
 function isAuthFailure(err: unknown): boolean {
   return /failed: [4]\d\d/.test(String(err));
@@ -166,7 +167,13 @@ function syncStateBadge(state: string): { label: string; color: string } {
   }
 }
 
-function MainView({ onSessionExpired }: { onSessionExpired: () => void }) {
+function MainView({
+  onSessionExpired,
+  onOpenOnboarding,
+}: {
+  onSessionExpired: () => void;
+  onOpenOnboarding: () => void;
+}) {
   const [syncPath, setSyncPath] = useState<string>("");
   const [localEvents, setLocalEvents] = useState<LocalEvent[]>([]);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({ active: [], errors: [] });
@@ -366,6 +373,14 @@ function MainView({ onSessionExpired }: { onSessionExpired: () => void }) {
             {theme === "dark" ? t.on : t.off}
           </button>
         </div>
+        <div className="setting-row" style={{ marginTop: "0.75rem" }}>
+          <div>
+            <div className="setting-label">{t.changeSyncSettings}</div>
+          </div>
+          <button className="back-btn" onClick={onOpenOnboarding}>
+            ⚙
+          </button>
+        </div>
       </div>
 
       <div className="events-card">
@@ -434,7 +449,7 @@ export default function App() {
             userId: tokens.userId,
             keyPassword,
           });
-          setAppState("ready");
+          setAppState((await isOnboardingNeeded()) ? "onboarding" : "ready");
           return;
         }
       } catch (err) {
@@ -445,17 +460,29 @@ export default function App() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (appState === "loading") return <div className="loading">{t.loading}</div>;
+  const goToNextState = async () => {
+    setAppState((await isOnboardingNeeded()) ? "onboarding" : "ready");
+  };
+
   if (appState === "loggedOut") {
-    return <LoginForm onLoginSuccess={() => setAppState("ready")} />;
+    return <LoginForm onLoginSuccess={goToNextState} />;
+  }
+  if (appState === "onboarding") {
+    return <Onboarding onComplete={() => setAppState("ready")} />;
   }
   if (appState === "unlocking") {
     return (
       <UnlockForm
-        onUnlocked={() => setAppState("ready")}
+        onUnlocked={goToNextState}
         onSessionExpired={handleSessionExpired}
       />
     );
   }
 
-  return <MainView onSessionExpired={handleSessionExpired} />;
+  return (
+    <MainView
+      onSessionExpired={handleSessionExpired}
+      onOpenOnboarding={() => setAppState("onboarding")}
+    />
+  );
 }
