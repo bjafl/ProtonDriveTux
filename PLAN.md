@@ -80,32 +80,12 @@ so deletes are synced.
 
 ## Remaining feature work
 
-### Phase 2 — remaining
-
-**2.6 Smoke test button (low priority)**  
-A "Test upload" button in MainView that uploads a tiny temp file to Drive root and
-reads it back, confirming end-to-end crypto + transfer works. Useful for debugging.
-Can be removed before v1 release.
-
----
-
 ### Phase 3 — remaining
 
 **3.1 Sync pause / resume**  
 Add a stop-sync path: unsubscribe from Drive events, stop the local watcher,
 set a `paused` flag so inotify events are dropped. Resume: restart watcher + resubscribe.
 Expose `pause_sync` / `resume_sync` Tauri commands. Show pause/resume button in MainView.
-
-**3.2 Retry / backoff for upload/download errors**  
-Transient network errors currently surface as errors in the status list and are not
-retried. Add an exponential backoff queue (1 s → 2 s → 4 s → … max 60 s, max 3 retries)
-before marking `sync_state = error`. The SDK already retries internally on some errors;
-this wraps the outer `handleLocalUpsert` / `handleRemoteNodeUpdate` calls.
-
-**3.3 Concurrent uploads (p-limit)**  
-All uploads are sequential (one `await handleLocalUpsert` at a time). Add `p-limit`
-(or equivalent) to run e.g. 3 uploads in parallel. Requires a shared counter so
-`markActive` labels remain meaningful.
 
 ---
 
@@ -116,10 +96,8 @@ All uploads are sequential (one `await handleLocalUpsert` at a time). Add `p-lim
 label. Replace with the list of selected folder names from `selectedFolders` state
 (read from DB via `get_db_sync_config("selected_folders")`).
 
-**4.2 Settings: re-run onboarding / change sync root**  
-"Change sync settings" button exists in MainView but it re-runs the full onboarding
-wizard, which restarts from the welcome screen. Improve: jump directly to the
-local-root or folder-select step. Also: when the user changes the local root,
+**4.2 Watcher handoff when sync root changes**  
+"Change sync settings" re-runs onboarding. When the user saves a new local root,
 stop the watcher on the old path (see G3), start it on the new path, and clear
 the `files` DB table so initial sync re-discovers everything.
 
@@ -139,7 +117,8 @@ notification per 30 s to avoid spam.
 
 | Item | Reason deferred | Revisit |
 |------|----------------|---------|
-| Concurrent uploads (3.3) | Sequential is safe; ordering bugs are worse than slow | After basic sync is stable |
+| Concurrent uploads | Sequential is safe; ordering bugs are worse than slow | After basic sync is stable |
+| Retry / backoff | SDK retries transient errors internally; outer wrapper is marginal | After G1–G4 fixed |
 | Runtime conflict wizard | Last-write-wins is documented v1 policy | Phase 3 follow-up |
 | File picker "Browse" button | Requires `tauri-plugin-dialog`; text input works | Phase 4 |
 | GNOME tray without extension | `gnome-shell-extension-appindicator` standard on Ubuntu 22.04+ | Known limitation |
