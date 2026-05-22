@@ -38,6 +38,12 @@ export interface DriveSession {
 
 let driveClient: ProtonDriveClient | null = null;
 let currentSession: DriveSession | null = null;
+let _onSessionExpired: (() => void) | null = null;
+
+/** Called by the UI to register a handler for when the refresh token is rejected. */
+export function setSessionExpiredCallback(cb: (() => void) | null): void {
+  _onSessionExpired = cb;
+}
 
 // Reads/writes event anchors from the Tauri DB so subscriptions resume after restart.
 const latestEventIdProvider: LatestEventIdProvider = {
@@ -76,7 +82,13 @@ async function refreshSession(): Promise<void> {
     body: JSON.stringify({ UID: uid, RefreshToken: refreshToken }),
   });
 
-  if (!resp.ok) throw new Error(`Token refresh failed: ${resp.status}`);
+  if (!resp.ok) {
+    // 4xx means the refresh token itself is rejected — session is dead.
+    if (resp.status >= 400 && resp.status < 500) {
+      _onSessionExpired?.();
+    }
+    throw new Error(`Token refresh failed: ${resp.status}`);
+  }
   const data = (await resp.json()) as {
     AccessToken: string;
     RefreshToken: string;
@@ -92,6 +104,40 @@ async function refreshSession(): Promise<void> {
     refreshToken: data.RefreshToken,
     userId,
   });
+}
+
+/**
+ * Refreshes tokens using only a refresh token (no currentSession required).
+ * Used during the unlock flow, before initDriveClient has been called.
+ * Returns the new tokens and persists them to the keyring.
+ */
+export async function refreshTokens(
+  uid: string,
+  refreshToken: string,
+  userId: string,
+): Promise<{ accessToken: string; refreshToken: string }> {
+  const resp = await fetch(`${BASE_URL}/auth/v4/refresh`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-pm-appversion": APP_VERSION,
+      "x-pm-uid": uid,
+      Authorization: `Bearer ${refreshToken}`,
+    },
+    body: JSON.stringify({ UID: uid, RefreshToken: refreshToken }),
+  });
+
+  if (!resp.ok) throw new Error(`Token refresh failed: ${resp.status}`);
+  const data = (await resp.json()) as { AccessToken: string; RefreshToken: string };
+
+  await invoke("store_tokens", {
+    uid,
+    accessToken: data.AccessToken,
+    refreshToken: data.RefreshToken,
+    userId,
+  });
+
+  return { accessToken: data.AccessToken, refreshToken: data.RefreshToken };
 }
 
 export async function initDriveClient(session: DriveSession): Promise<void> {
@@ -131,6 +177,7 @@ export function getDriveClient(): ProtonDriveClient {
 export function releaseDriveClient(): void {
   driveClient = null;
   currentSession = null;
+  _onSessionExpired = null;
 }
 
 export async function getSyncRoot(): Promise<MaybeNode> {

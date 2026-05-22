@@ -7,10 +7,11 @@ mod watcher;
 use commands::{
     AppState, close_captcha_window, delete_local_file, disable_autostart, enable_autostart,
     get_all_file_states, get_auth_status, get_autostart_enabled, get_db_sync_config,
-    get_file_state_by_local_path, get_file_state_by_remote_id, get_session_tokens, list_local_dir,
-    logout, open_captcha_window, read_local_file, rename_local_file, restore_session_from_keyring,
-    set_db_sync_config, set_file_sync_state, show_notification, stat_local_file, store_tokens,
-    trash_local_file, upsert_file_state, write_local_file,
+    get_file_state_by_local_path, get_file_state_by_remote_id, get_key_password, get_session_tokens,
+    list_local_dir, logout, open_captcha_window, read_local_file, rename_local_file,
+    restore_session_from_keyring, set_db_sync_config, set_file_sync_state, show_notification,
+    stat_local_file, store_key_password, store_tokens, trash_local_file, upsert_file_state,
+    write_local_file,
 };
 use db::Db;
 use tauri::{
@@ -109,6 +110,8 @@ pub fn run() {
             get_autostart_enabled,
             enable_autostart,
             disable_autostart,
+            store_key_password,
+            get_key_password,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

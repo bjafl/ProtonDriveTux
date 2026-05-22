@@ -64,3 +64,42 @@ pub async fn clear_session() -> Result<(), KeyringError> {
 fn session_attrs() -> HashMap<&'static str, &'static str> {
     HashMap::from([("application", APP_ATTR), ("type", "session")])
 }
+
+// ── Key password ─────────────────────────────────────────────────────────────
+
+const KEY_PASSWORD_LABEL: &str = "Proton Drive Sync — key password";
+
+fn key_password_attrs() -> HashMap<&'static str, &'static str> {
+    HashMap::from([("application", APP_ATTR), ("type", "key_password")])
+}
+
+pub async fn store_key_password(key_password: &str) -> Result<(), KeyringError> {
+    let ss = SecretService::connect(EncryptionType::Dh).await?;
+    let collection = ss.get_default_collection().await?;
+    collection.unlock().await?;
+    collection
+        .create_item(KEY_PASSWORD_LABEL, key_password_attrs(), key_password.as_bytes(), true, "text/plain")
+        .await?;
+    Ok(())
+}
+
+pub async fn load_key_password() -> Option<String> {
+    let ss = SecretService::connect(EncryptionType::Dh).await.ok()?;
+    let collection = ss.get_default_collection().await.ok()?;
+    collection.unlock().await.ok()?;
+    let items = collection.search_items(key_password_attrs()).await.ok()?;
+    let item = items.first()?;
+    let bytes = item.get_secret().await.ok()?;
+    String::from_utf8(bytes).ok()
+}
+
+pub async fn clear_key_password() -> Result<(), KeyringError> {
+    let ss = SecretService::connect(EncryptionType::Dh).await?;
+    let collection = ss.get_default_collection().await?;
+    collection.unlock().await?;
+    let items = collection.search_items(key_password_attrs()).await?;
+    for item in items {
+        item.delete().await?;
+    }
+    Ok(())
+}

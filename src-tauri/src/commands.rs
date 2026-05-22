@@ -85,9 +85,22 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     keyring::clear_session()
         .await
         .map_err(|e| e.to_string())?;
+    let _ = keyring::clear_key_password().await;
 
     *state.session.lock().unwrap() = None;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn store_key_password(key_password: String) -> Result<(), String> {
+    keyring::store_key_password(&key_password)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_key_password() -> Option<String> {
+    keyring::load_key_password().await
 }
 
 #[tauri::command]
@@ -131,6 +144,7 @@ pub async fn restore_session_from_keyring(state: &AppState) {
 pub async fn open_captcha_window(
     token: String,
     methods: Vec<String>,
+    theme: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     // Close any stale captcha window from a previous attempt.
@@ -139,10 +153,15 @@ pub async fn open_captcha_window(
     }
 
     let mut url = url::Url::parse("https://verify.proton.me/").map_err(|e| e.to_string())?;
-    url.query_pairs_mut()
-        .append_pair("methods", &methods.join(","))
-        .append_pair("token", &token)
-        .append_pair("embed", "1");
+    {
+        let mut q = url.query_pairs_mut();
+        q.append_pair("methods", &methods.join(","))
+            .append_pair("token", &token)
+            .append_pair("embed", "1");
+        if let Some(t) = theme.as_deref() {
+            q.append_pair("theme", t);
+        }
+    }
 
     // verify.proton.me detects the host environment and picks a postMessage path:
     //   - WebView2 (Chromium): calls window.chrome.webview.postMessage({type:'pm_captcha', token:TOKEN})
@@ -190,8 +209,8 @@ pub async fn open_captcha_window(
     let app_handle = app.clone();
     tauri::WebviewWindowBuilder::new(&app, "captcha", tauri::WebviewUrl::External(url))
         .title("Human Verification — Proton Drive")
-        .inner_size(440.0, 560.0)
-        .resizable(false)
+        .inner_size(480.0, 700.0)
+        .resizable(true)
         .devtools(true)
         .on_navigation(move |nav_url| {
             if nav_url.scheme() == "pd-captcha" {
