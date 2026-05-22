@@ -6,6 +6,10 @@
  *
  * Anti-loop: when we write a file locally we suppress inotify events for
  * that path for 5 seconds so we don't re-upload what we just downloaded.
+ *
+ * Config is read from the DB at startup (set via onboarding):
+ *   local_root       — absolute local path
+ *   selected_folders — JSON: SelectedFolderRecord[]
  */
 import { DriveEventType, NodeType } from "@protontech/drive-sdk";
 import type { DriveEvent } from "@protontech/drive-sdk";
@@ -20,7 +24,6 @@ import {
   getFileDownloader,
   subscribeToTreeEvents,
   getNode,
-  findOrCreateFolder,
   listFolderChildren,
   persistEventAnchor,
 } from "./drive";
@@ -33,7 +36,7 @@ interface WatchEvent {
 }
 
 export interface SyncStatus {
-  active: string[]; // paths / ids currently being synced
+  active: string[];
   errors: Array<{ path: string; error: string }>;
 }
 
@@ -51,32 +54,31 @@ interface FileStat {
   sizeBytes: number;
 }
 
-// ── Config ───────────────────────────────────────────────────────────────────
+export interface SelectedFolderRecord {
+  uid: string;
+  name: string;
+  drivePath: string; // relative to My Files root, e.g. "Work/Projects"
+  mode: "files" | "recursive";
+}
 
-/**
- * Name of the Drive folder used for testing. Only files directly inside this
- * folder are synced — everything else on Drive is untouched.
- */
-export const SYNC_FOLDER_NAME = "LinuxSyncTest";
+interface WatchedFolderEntry {
+  localDir: string;            // absolute local path for this Drive folder
+  selectedRoot: SelectedFolderRecord;
+}
 
 // ── Module-level state ───────────────────────────────────────────────────────
 
-/** path → timestamp until which inotify events are suppressed */
 const suppressUntil = new Map<string, number>();
-
-/** nodeUids we just uploaded — suppress their drive events */
 const recentlyUploaded = new Set<string>();
-
 const SUPPRESS_MS = 5_000;
 
-/** UID of the remote Drive folder we sync against (resolved once on startup). */
-let _syncFolderUid: string | null = null;
-/** Volume event scope for the Drive tree — used with subscribeToTreeEvents. */
-let _treeEventScopeId: string | null = null;
+/**
+ * Maps Drive folder UID → its local directory and which top-level selection it
+ * belongs to. Built at startup and used by both event handlers to derive paths.
+ */
+const watchedFolderUids = new Map<string, WatchedFolderEntry>();
 
-export function getSyncFolderUid(): string | null {
-  return _syncFolderUid;
-}
+let _localRoot: string | null = null;
 
 let _status: SyncStatus = { active: [], errors: [] };
 let _statusCallback: ((s: SyncStatus) => void) | null = null;
@@ -107,7 +109,6 @@ function markInactive(label: string): void {
 
 function recordError(path: string, error: string): void {
   _status.errors.push({ path, error });
-  // Keep last 20 errors
   if (_status.errors.length > 20) _status.errors.shift();
   notifyStatus();
 }
@@ -136,176 +137,179 @@ async function statFile(absPath: string): Promise<FileStat | null> {
   }
 }
 
-/**
- * Waits until the file's mtime and size stop changing, up to ~2 s.
- * Returns the stable stat, or null if the file vanished.
- */
 async function waitForFileStable(absPath: string): Promise<FileStat | null> {
   const first = await statFile(absPath);
   if (!first) return null;
   await new Promise<void>((r) => setTimeout(r, 1_000));
   const second = await statFile(absPath);
   if (!second) return null;
-  if (second.mtimeMs === first.mtimeMs && second.sizeBytes === first.sizeBytes) {
-    return second;
-  }
-  // Still changing — wait one more second and proceed regardless.
+  if (second.mtimeMs === first.mtimeMs && second.sizeBytes === first.sizeBytes) return second;
   await new Promise<void>((r) => setTimeout(r, 1_000));
   return statFile(absPath);
 }
 
-// ── Sync folder resolution ───────────────────────────────────────────────────
+// ── Config loading ───────────────────────────────────────────────────────────
 
-/**
- * Resolves the remote Drive folder UID for SYNC_FOLDER_NAME, creating the
- * folder if it doesn't exist. Caches the result in the DB so it survives
- * restarts without an extra API round-trip.
- */
-async function resolveSyncFolder(): Promise<string> {
-  // Check DB cache first (both folder UID and tree event scope).
-  const [cached, cachedScope] = await Promise.all([
-    invoke<string | null>("get_db_sync_config", { key: "sync_folder_uid" }),
-    invoke<string | null>("get_db_sync_config", { key: "tree_event_scope_id" }),
+async function loadSyncConfig(): Promise<{
+  localRoot: string;
+  selectedFolders: SelectedFolderRecord[];
+  treeEventScopeId: string;
+}> {
+  const [localRoot, selectedFoldersJson] = await Promise.all([
+    invoke<string | null>("get_local_root"),
+    invoke<string | null>("get_db_sync_config", { key: "selected_folders" }),
   ]);
-  if (cached && cachedScope) {
-    _syncFolderUid = cached;
-    _treeEventScopeId = cachedScope;
-    return cached;
-  }
+
+  if (!localRoot) throw new Error("No local root configured — run onboarding first");
+
+  const selectedFolders: SelectedFolderRecord[] = selectedFoldersJson
+    ? (JSON.parse(selectedFoldersJson) as SelectedFolderRecord[])
+    : [];
 
   const rootResult = await getSyncRoot();
-  if (!rootResult.ok) {
-    throw new Error("Could not get Drive root: " + String(rootResult.error));
+  if (!rootResult.ok) throw new Error("Could not get Drive root: " + String(rootResult.error));
+
+  const treeEventScopeId = rootResult.value.treeEventScopeId;
+  await invoke("set_db_sync_config", { key: "tree_event_scope_id", value: treeEventScopeId });
+
+  return { localRoot, selectedFolders, treeEventScopeId };
+}
+
+// ── Watched folder map ───────────────────────────────────────────────────────
+
+async function expandFolderUids(
+  folderUid: string,
+  localDir: string,
+  selectedRoot: SelectedFolderRecord,
+  mode: "files" | "recursive",
+): Promise<void> {
+  watchedFolderUids.set(folderUid, { localDir, selectedRoot });
+  if (mode !== "recursive") return;
+  for await (const child of listFolderChildren(folderUid, { type: NodeType.Folder })) {
+    if (!child.ok) continue;
+    const childLocalDir = `${localDir}/${child.value.name}`;
+    await expandFolderUids(child.value.uid, childLocalDir, selectedRoot, "recursive");
   }
+}
 
-  // Capture the volume's event scope from the root node.
-  _treeEventScopeId = rootResult.value.treeEventScopeId;
-  await invoke("set_db_sync_config", { key: "tree_event_scope_id", value: _treeEventScopeId });
-
-  const folderResult = await findOrCreateFolder(rootResult.value, SYNC_FOLDER_NAME);
-  if (!folderResult.ok) {
-    throw new Error("Could not find/create sync folder: " + String(folderResult.error));
+async function buildWatchedFolderMap(
+  selectedFolders: SelectedFolderRecord[],
+  localRoot: string,
+): Promise<void> {
+  watchedFolderUids.clear();
+  for (const folder of selectedFolders) {
+    const localDir = folder.drivePath ? `${localRoot}/${folder.drivePath}` : localRoot;
+    await expandFolderUids(folder.uid, localDir, folder, folder.mode);
   }
+}
 
-  const uid = folderResult.value.uid;
-  await invoke("set_db_sync_config", { key: "sync_folder_uid", value: uid });
-  _syncFolderUid = uid;
-  console.log("[sync] Sync folder resolved:", SYNC_FOLDER_NAME, "→", uid, "scope:", _treeEventScopeId);
-  return uid;
+/** Find the best-matching watched folder entry for a local absolute path. */
+function findWatchedFolderByLocalPath(
+  absPath: string,
+): { uid: string; entry: WatchedFolderEntry } | null {
+  let best: { uid: string; entry: WatchedFolderEntry; len: number } | null = null;
+  for (const [uid, entry] of watchedFolderUids) {
+    if (absPath === entry.localDir || absPath.startsWith(entry.localDir + "/")) {
+      if (!best || entry.localDir.length > best.len) {
+        best = { uid, entry, len: entry.localDir.length };
+      }
+    }
+  }
+  return best ? { uid: best.uid, entry: best.entry } : null;
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/**
- * Start the bidirectional sync engine.
- *
- * @returns A cleanup function that stops both the Drive event subscription
- *          and the local-change listener.
- */
-export async function startSync(syncRoot: string): Promise<() => void> {
-  console.log("[sync] Starting sync engine, syncRoot:", syncRoot);
+export async function startSync(): Promise<() => void> {
+  console.log("[sync] Loading sync config from DB…");
+  const { localRoot, selectedFolders, treeEventScopeId } = await loadSyncConfig();
+  _localRoot = localRoot;
 
-  // Resolve (or create) the test folder before accepting any events.
-  await resolveSyncFolder();
+  console.log(
+    "[sync] Building watched folder map,",
+    selectedFolders.length,
+    "selected folder(s)…",
+  );
+  await buildWatchedFolderMap(selectedFolders, localRoot);
+  console.log("[sync] Watching", watchedFolderUids.size, "Drive folder(s)");
 
-  // Initial sync: download any pre-existing remote files and upload untracked local files.
-  await initialSyncFolder(syncRoot);
-  await initialSyncLocalFolder(syncRoot);
+  await initialSyncFolder();
+  await initialSyncLocalFolder();
 
-  // Subscribe to the volume's tree event scope for file-level events (NodeCreated, etc.).
-  if (!_treeEventScopeId) throw new Error("Tree event scope ID not resolved");
-  const subscription = await subscribeToTreeEvents(_treeEventScopeId, async (event: DriveEvent) => {
-    try {
-      await handleDriveEvent(event, syncRoot);
-    } catch (err) {
-      console.error("[sync] Unhandled error in drive event handler:", err);
-    }
-  });
-
-  // Listen for local inotify events from Rust.
-  const unlisten: UnlistenFn = await listen<WatchEvent>(
-    "sync://local-change",
-    async (e) => {
+  const subscription = await subscribeToTreeEvents(
+    treeEventScopeId,
+    async (event: DriveEvent) => {
       try {
-        await handleLocalChange(e.payload, syncRoot);
+        await handleDriveEvent(event);
       } catch (err) {
-        console.error("[sync] Unhandled error in local-change handler:", err);
+        console.error("[sync] Unhandled error in drive event handler:", err);
       }
     },
   );
+
+  const unlisten: UnlistenFn = await listen<WatchEvent>("sync://local-change", async (e) => {
+    try {
+      await handleLocalChange(e.payload);
+    } catch (err) {
+      console.error("[sync] Unhandled error in local-change handler:", err);
+    }
+  });
 
   console.log("[sync] Sync engine started");
 
   return () => {
     unlisten();
     subscription.dispose();
+    watchedFolderUids.clear();
+    _localRoot = null;
     console.log("[sync] Sync engine stopped");
   };
 }
 
 // ── Initial sync ─────────────────────────────────────────────────────────────
 
-/**
- * Enumerate all files in the sync folder. Downloads files that are not yet
- * tracked locally, and re-downloads files whose remote revision has changed.
- * Also called when TreeRefresh/FastForward signals the event stream has gaps.
- */
-async function initialSyncFolder(syncRoot: string): Promise<void> {
-  if (!_syncFolderUid) return;
-  console.log("[sync] Scanning remote sync folder…");
-  let downloaded = 0;
-  try {
-    for await (const result of listFolderChildren(_syncFolderUid, { type: NodeType.File })) {
-      if (!result.ok) {
-        console.warn("[sync] Error enumerating child:", result.error);
-        continue;
+async function initialSyncFolder(): Promise<void> {
+  for (const [folderUid, entry] of watchedFolderUids) {
+    console.log("[sync] Scanning remote folder:", entry.localDir);
+    try {
+      for await (const result of listFolderChildren(folderUid, { type: NodeType.File })) {
+        if (!result.ok) {
+          console.warn("[sync] Error enumerating child:", result.error);
+          continue;
+        }
+        const node = result.value;
+        const existing = await invoke<FileState | null>("get_file_state_by_remote_id", {
+          remoteId: node.uid,
+        });
+        if (existing) {
+          const remoteRevUid = node.activeRevision?.uid;
+          if (remoteRevUid && remoteRevUid === existing.etag) continue;
+        }
+        await handleRemoteNodeUpdate(node.uid);
       }
-      const node = result.value;
-      const existing = await invoke<FileState | null>("get_file_state_by_remote_id", {
-        remoteId: node.uid,
-      });
-
-      if (existing) {
-        // Skip if we already have the same revision.
-        const remoteRevUid = node.activeRevision?.uid;
-        if (remoteRevUid && remoteRevUid === existing.etag) continue;
-      }
-
-      await handleRemoteNodeUpdate(node.uid, syncRoot);
-      downloaded++;
+    } catch (err) {
+      console.error("[sync] Folder scan failed for", entry.localDir, err);
     }
-  } catch (err) {
-    console.error("[sync] Initial folder scan failed:", err);
   }
-  console.log("[sync] Remote scan complete, synced", downloaded, "file(s)");
 }
 
-/**
- * Enumerate local files and upload those not yet tracked or whose content has
- * changed since the last sync.
- */
-async function initialSyncLocalFolder(syncRoot: string): Promise<void> {
-  console.log("[sync] Scanning local sync folder…");
-  let uploaded = 0;
-  try {
-    const files = await invoke<string[]>("list_local_dir", { absPath: syncRoot });
-    for (const absPath of files) {
-      // handleLocalUpsert handles its own "skip if unchanged" logic.
-      const before = _status.active.length;
-      await handleLocalUpsert(absPath, syncRoot, false);
-      if (_status.active.length !== before || _status.errors.some((e) => e.path === absPath)) {
-        uploaded++;
+async function initialSyncLocalFolder(): Promise<void> {
+  for (const [, entry] of watchedFolderUids) {
+    console.log("[sync] Scanning local folder:", entry.localDir);
+    try {
+      const files = await invoke<string[]>("list_local_dir", { absPath: entry.localDir });
+      for (const absPath of files) {
+        await handleLocalUpsert(absPath, false);
       }
+    } catch (err) {
+      console.error("[sync] Local folder scan failed for", entry.localDir, err);
     }
-  } catch (err) {
-    console.error("[sync] Local folder scan failed:", err);
   }
-  console.log("[sync] Local scan complete, processed", uploaded, "file(s)");
 }
 
 // ── Local → Remote ───────────────────────────────────────────────────────────
 
-async function handleLocalChange(event: WatchEvent, syncRoot: string): Promise<void> {
+async function handleLocalChange(event: WatchEvent): Promise<void> {
   const { absPath, kind } = event;
 
   if (isSuppressed(absPath)) {
@@ -314,36 +318,25 @@ async function handleLocalChange(event: WatchEvent, syncRoot: string): Promise<v
   }
 
   if (kind === "delete") {
-    // Safety: don't propagate deletes to remote in MVP (last-write-wins).
     console.log("[sync] skipping local delete (MVP safety):", absPath);
     return;
   }
 
-  // create | modify — stability check before uploading.
-  await handleLocalUpsert(absPath, syncRoot, true);
+  await handleLocalUpsert(absPath, true);
 }
 
-/**
- * Uploads a local file to Drive, creating a new revision if the file already
- * exists remotely. Skips the upload if the file is unchanged (same size).
- *
- * @param checkStability - When true, waits for the file to stop changing
- *   before reading it (prevents uploading partial writes). Pass false during
- *   the startup scan where files are already at rest.
- */
-async function handleLocalUpsert(
-  absPath: string,
-  _syncRoot: string,
-  checkStability: boolean,
-): Promise<void> {
+async function handleLocalUpsert(absPath: string, checkStability: boolean): Promise<void> {
+  const match = findWatchedFolderByLocalPath(absPath);
+  if (!match) {
+    console.log("[sync] file not in any watched folder, skipping:", absPath);
+    return;
+  }
+  const targetFolderUid = match.uid;
+
   const label = absPath;
   markActive(label);
   try {
-    // Get a stable snapshot of the file's metadata.
-    const stat = checkStability
-      ? await waitForFileStable(absPath)
-      : await statFile(absPath);
-
+    const stat = checkStability ? await waitForFileStable(absPath) : await statFile(absPath);
     if (!stat) {
       console.log("[sync] skipping (file disappeared or unreadable):", absPath);
       return;
@@ -353,15 +346,11 @@ async function handleLocalUpsert(
       localPath: absPath,
     });
 
-    if (existing) {
-      // Skip if size is unchanged — cheapest signal for "probably the same content".
-      if (existing.sizeBytes !== null && stat.sizeBytes === existing.sizeBytes) {
-        console.log("[sync] skipping upload — size unchanged:", absPath);
-        return;
-      }
+    if (existing?.sizeBytes !== null && existing && stat.sizeBytes === existing.sizeBytes) {
+      console.log("[sync] skipping upload — size unchanged:", absPath);
+      return;
     }
 
-    // Read file as base64.
     let contentB64: string;
     try {
       contentB64 = await invoke<string>("read_local_file", { absPath });
@@ -375,8 +364,6 @@ async function handleLocalUpsert(
     for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
 
     const filename = absPath.split("/").pop() ?? absPath;
-    if (!_syncFolderUid) throw new Error("Sync folder not resolved — cannot upload");
-
     const blob = new Blob([bytes]);
     const file = new File([blob], filename, { lastModified: stat.mtimeMs });
     const metadata = {
@@ -389,7 +376,6 @@ async function handleLocalUpsert(
     let nodeRevisionUid: string;
 
     if (existing) {
-      // Upload a new revision of the existing Drive node.
       try {
         const uploader = await getFileRevisionUploader(existing.remoteId, metadata);
         const controller = await uploader.uploadFromFile(file, [], () => {});
@@ -398,19 +384,16 @@ async function handleLocalUpsert(
       } catch (err) {
         const msg = String(err);
         if (msg.includes("not enabled for Documents") || msg.includes("Revision is currently")) {
-          // Proton Docs nodes don't support revision uploads — skip silently.
           console.log("[sync] skipping Docs node (revision upload not supported):", absPath);
           return;
         }
         throw err;
       }
     } else {
-      // Upload a brand-new file.
-      const uploader = await getFileUploader(_syncFolderUid, filename, metadata);
+      const uploader = await getFileUploader(targetFolderUid, filename, metadata);
       const controller = await uploader.uploadFromFile(file, [], () => {});
       ({ nodeUid, nodeRevisionUid } = await controller.completion());
 
-      // Suppress the drive event for our own upload.
       recentlyUploaded.add(nodeUid);
       setTimeout(() => recentlyUploaded.delete(nodeUid), SUPPRESS_MS);
 
@@ -440,20 +423,18 @@ async function handleLocalUpsert(
 
 // ── Remote → Local ───────────────────────────────────────────────────────────
 
-async function handleDriveEvent(event: DriveEvent, syncRoot: string): Promise<void> {
+async function handleDriveEvent(event: DriveEvent): Promise<void> {
   if (
     event.type === DriveEventType.NodeCreated ||
     event.type === DriveEventType.NodeUpdated
   ) {
-    // A trashed node event means the file was moved to trash — treat as deletion.
     if (event.isTrashed) {
-      await handleRemoteDelete(event.nodeUid, syncRoot);
+      await handleRemoteDelete(event.nodeUid);
       return;
     }
 
-    // Early filter: if parentNodeUid is known and not our sync folder, skip without API call.
-    if (event.parentNodeUid && event.parentNodeUid !== _syncFolderUid) {
-      console.log("[sync] skipping node outside sync folder (by parentUid):", event.nodeUid);
+    if (event.parentNodeUid && !watchedFolderUids.has(event.parentNodeUid)) {
+      console.log("[sync] skipping node outside watched folders (by parentUid):", event.nodeUid);
       return;
     }
 
@@ -462,32 +443,25 @@ async function handleDriveEvent(event: DriveEvent, syncRoot: string): Promise<vo
       return;
     }
 
-    await handleRemoteNodeUpdate(event.nodeUid, syncRoot);
-
+    await handleRemoteNodeUpdate(event.nodeUid);
   } else if (event.type === DriveEventType.NodeDeleted) {
-    await handleRemoteDelete(event.nodeUid, syncRoot);
-
+    await handleRemoteDelete(event.nodeUid);
   } else if (
     event.type === DriveEventType.TreeRefresh ||
     event.type === DriveEventType.FastForward
   ) {
-    // The event stream has a gap — re-scan the sync folder to catch up.
     console.log("[sync] received", event.type, "— triggering full folder re-scan");
-    await initialSyncFolder(syncRoot);
-
+    await initialSyncFolder();
   } else {
-    // TreeRemove, SharedWithMeUpdated, etc. — not relevant to our sync folder.
     console.log("[sync] ignoring drive event type:", event.type);
   }
 
-  // Persist the anchor after successful handling so the subscription resumes
-  // from this point on next startup instead of replaying from scratch.
   if ("treeEventScopeId" in event && "eventId" in event) {
     persistEventAnchor(event.treeEventScopeId, event.eventId).catch(() => {});
   }
 }
 
-async function handleRemoteNodeUpdate(nodeUid: string, syncRoot: string): Promise<void> {
+async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
   const label = nodeUid;
   markActive(label);
   try {
@@ -498,13 +472,12 @@ async function handleRemoteNodeUpdate(nodeUid: string, syncRoot: string): Promis
     }
     const node = nodeResult.value;
 
-    // Only handle nodes that live directly inside the test sync folder.
-    if (node.parentUid !== _syncFolderUid) {
-      console.log("[sync] skipping node outside sync folder:", nodeUid, "parent:", node.parentUid);
+    const watchedEntry = node.parentUid ? watchedFolderUids.get(node.parentUid) : undefined;
+    if (!watchedEntry) {
+      console.log("[sync] skipping node outside watched folders:", nodeUid, "parent:", node.parentUid);
       return;
     }
 
-    // Only handle files in MVP.
     if (node.type !== NodeType.File) {
       console.log("[sync] skipping non-file node:", nodeUid, node.type);
       return;
@@ -515,7 +488,7 @@ async function handleRemoteNodeUpdate(nodeUid: string, syncRoot: string): Promis
     });
 
     const activeRevisionUid = node.activeRevision?.uid ?? null;
-    const expectedPath = `${syncRoot}/${node.name}`;
+    const expectedPath = `${watchedEntry.localDir}/${node.name}`;
 
     if (existing) {
       const isRename = existing.localPath !== expectedPath;
@@ -527,7 +500,6 @@ async function handleRemoteNodeUpdate(nodeUid: string, syncRoot: string): Promis
       }
 
       if (isRename && isContentSame) {
-        // Pure rename: move the local file and update the DB record.
         suppressPath(existing.localPath);
         suppressPath(expectedPath);
         await invoke("rename_local_file", { fromPath: existing.localPath, toPath: expectedPath });
@@ -543,14 +515,15 @@ async function handleRemoteNodeUpdate(nodeUid: string, syncRoot: string): Promis
         return;
       }
 
-      // Content changed (possibly also renamed): trash the old local file if path differs.
       if (isRename) {
         suppressPath(existing.localPath);
-        await invoke("trash_local_file", { absPath: existing.localPath, syncRoot });
+        await invoke("trash_local_file", {
+          absPath: existing.localPath,
+          syncRoot: _localRoot ?? "",
+        });
       }
     }
 
-    // Download the file to its new (or unchanged) path.
     const downloader = await getFileDownloader(nodeUid);
     const chunks: Uint8Array[] = [];
     const writable = new WritableStream<Uint8Array>({
@@ -561,7 +534,6 @@ async function handleRemoteNodeUpdate(nodeUid: string, syncRoot: string): Promis
     const dlController = downloader.downloadToStream(writable, () => {});
     await dlController.completion();
 
-    // Merge chunks → base64.
     const totalLength = chunks.reduce((s, c) => s + c.length, 0);
     const merged = new Uint8Array(totalLength);
     let offset = 0;
@@ -573,9 +545,7 @@ async function handleRemoteNodeUpdate(nodeUid: string, syncRoot: string): Promis
     for (let i = 0; i < merged.length; i++) binary += String.fromCharCode(merged[i]);
     const b64 = btoa(binary);
 
-    // Suppress inotify so we don't re-upload what we just wrote.
     suppressPath(expectedPath);
-
     await invoke("write_local_file", { absPath: expectedPath, contentB64: b64 });
 
     const revision = node.activeRevision;
@@ -601,7 +571,7 @@ async function handleRemoteNodeUpdate(nodeUid: string, syncRoot: string): Promis
   }
 }
 
-async function handleRemoteDelete(nodeUid: string, syncRoot: string): Promise<void> {
+async function handleRemoteDelete(nodeUid: string): Promise<void> {
   try {
     const fileState = await invoke<FileState | null>("get_file_state_by_remote_id", {
       remoteId: nodeUid,
@@ -613,8 +583,10 @@ async function handleRemoteDelete(nodeUid: string, syncRoot: string): Promise<vo
     }
 
     suppressPath(fileState.localPath);
-    // Move to trash instead of permanently deleting — safeguard while sync logic is unverified.
-    await invoke("trash_local_file", { absPath: fileState.localPath, syncRoot });
+    await invoke("trash_local_file", {
+      absPath: fileState.localPath,
+      syncRoot: _localRoot ?? "",
+    });
     await invoke("set_file_sync_state", { remoteId: nodeUid, syncState: "deleted" });
 
     console.log("[sync] trashed local file:", fileState.localPath, "(remote:", nodeUid, ")");

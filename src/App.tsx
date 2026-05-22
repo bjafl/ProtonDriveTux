@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { LoginForm } from "./components/LoginForm";
 import { initDriveClient, deriveKeyPassword, refreshTokens, releaseDriveClient, setSessionExpiredCallback } from "./lib/drive";
-import { startSync, setSyncStatusCallback, SYNC_FOLDER_NAME } from "./lib/sync";
+import { startSync, setSyncStatusCallback } from "./lib/sync";
 import { defaultSyncPath } from "./lib/paths";
 import type { SyncStatus } from "./lib/sync";
 import { useLang } from "./lib/i18n";
@@ -222,7 +222,7 @@ function MainView({ onSessionExpired }: { onSessionExpired: () => void }) {
       });
 
       await invoke("start_file_watcher", { path: localRoot }).catch(console.error);
-      const stop = await startSync(localRoot);
+      const stop = await startSync();
       if (cancelled) { stop(); return; }
       stopSyncRef.current = stop;
 
@@ -293,7 +293,7 @@ function MainView({ onSessionExpired }: { onSessionExpired: () => void }) {
           {t.localFolder} <code>{syncPath || t.loading}</code>
         </div>
         <div className="sync-path">
-          {t.driveFolder} <code>My files / {SYNC_FOLDER_NAME}</code>
+          {t.driveFolder} <code>My files</code>
         </div>
         {syncStatus.active.length > 0 && (
           <ul style={{ margin: "0.4rem 0 0", padding: "0 0 0 1.2rem", fontSize: "0.82rem" }}>
