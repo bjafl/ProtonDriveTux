@@ -410,6 +410,209 @@ pub fn rename_local_file(from_path: String, to_path: String) -> Result<(), Strin
         .map_err(|e| format!("rename {from_path} → {to_path}: {e}"))
 }
 
+// ── Local root management ─────────────────────────────────────────────────────
+
+const SYSTEM_DIRS: &[&str] = &[
+    "/usr", "/etc", "/var", "/bin", "/lib", "/sbin", "/boot", "/proc", "/sys", "/dev", "/run",
+    "/tmp",
+];
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalRootInfo {
+    pub valid: bool,
+    pub exists: bool,
+    pub is_empty: bool,
+    pub file_count: u32,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+pub fn validate_local_root(path: String) -> Result<LocalRootInfo, String> {
+    let p = std::path::Path::new(&path);
+
+    if !p.is_absolute() {
+        return Ok(LocalRootInfo {
+            valid: false,
+            exists: false,
+            is_empty: true,
+            file_count: 0,
+            error: Some("Path must be absolute".into()),
+        });
+    }
+
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let home_path = std::path::Path::new(&home);
+
+    if path == home {
+        return Ok(LocalRootInfo {
+            valid: false,
+            exists: p.exists(),
+            is_empty: false,
+            file_count: 0,
+            error: Some("Cannot sync directly into your home directory".into()),
+        });
+    }
+
+    if !p.starts_with(home_path) {
+        return Ok(LocalRootInfo {
+            valid: false,
+            exists: p.exists(),
+            is_empty: false,
+            file_count: 0,
+            error: Some("Path must be inside your home directory".into()),
+        });
+    }
+
+    for sys in SYSTEM_DIRS {
+        if p.starts_with(sys) {
+            return Ok(LocalRootInfo {
+                valid: false,
+                exists: p.exists(),
+                is_empty: false,
+                file_count: 0,
+                error: Some(format!("Cannot use system directory {sys}")),
+            });
+        }
+    }
+
+    let exists = p.exists();
+    if !exists {
+        return Ok(LocalRootInfo {
+            valid: true,
+            exists: false,
+            is_empty: true,
+            file_count: 0,
+            error: None,
+        });
+    }
+
+    let file_count = count_files_capped(p, 10_000);
+    Ok(LocalRootInfo {
+        valid: true,
+        exists: true,
+        is_empty: file_count == 0,
+        file_count,
+        error: None,
+    })
+}
+
+fn count_files_capped(dir: &std::path::Path, cap: u32) -> u32 {
+    let mut count = 0u32;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        if count >= cap {
+            return count;
+        }
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if ft.is_file() {
+            count += 1;
+        } else if ft.is_dir() {
+            count = count.saturating_add(count_files_capped(&entry.path(), cap - count));
+        }
+    }
+    count
+}
+
+#[tauri::command]
+pub fn set_local_root(path: String, db: State<'_, Db>) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        std::fs::create_dir_all(p).map_err(|e| format!("Cannot create directory: {e}"))?;
+    }
+    db.set_sync_config("local_root", &path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_local_root(db: State<'_, Db>) -> Result<Option<String>, String> {
+    db.get_sync_config("local_root").map_err(|e| e.to_string())
+}
+
+// ── Recursive directory listing ───────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalFileEntry {
+    pub rel_path: String,
+    pub abs_path: String,
+    pub mtime_ms: i64,
+    pub size_bytes: i64,
+}
+
+#[tauri::command]
+pub fn list_dir_recursive(abs_path: String) -> Result<Vec<LocalFileEntry>, String> {
+    let root = std::path::Path::new(&abs_path);
+    let mut results = Vec::new();
+    collect_recursive(root, root, &mut results, 10_000)?;
+    Ok(results)
+}
+
+fn collect_recursive(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<LocalFileEntry>,
+    cap: usize,
+) -> Result<(), String> {
+    if out.len() >= cap {
+        return Ok(());
+    }
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))?;
+    for entry in entries.flatten() {
+        if out.len() >= cap {
+            break;
+        }
+        let path = entry.path();
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if ft.is_dir() {
+            if path.file_name().map_or(false, |n| n == ".trash") {
+                continue;
+            }
+            collect_recursive(root, &path, out, cap)?;
+        } else if ft.is_file() {
+            let Ok(meta) = std::fs::metadata(&path) else {
+                continue;
+            };
+            let mtime_ms = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_millis() as i64);
+            let rel_path = path
+                .strip_prefix(root)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            out.push(LocalFileEntry {
+                rel_path,
+                abs_path: path.to_string_lossy().into_owned(),
+                mtime_ms,
+                size_bytes: meta.len() as i64,
+            });
+        }
+    }
+    Ok(())
+}
+
+// ── File watcher (on-demand) ──────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn start_file_watcher(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    crate::watcher::start_watcher(app, std::path::PathBuf::from(path));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_home_dir() -> String {
+    std::env::var("HOME").unwrap_or_else(|_| "~".into())
+}
+
 // ── Desktop notifications ─────────────────────────────────────────────────────
 
 /// Shows a desktop notification. Silently no-ops if the notification daemon is unavailable.

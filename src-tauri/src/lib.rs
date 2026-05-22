@@ -7,11 +7,12 @@ mod watcher;
 use commands::{
     AppState, close_captcha_window, delete_local_file, disable_autostart, enable_autostart,
     get_all_file_states, get_auth_status, get_autostart_enabled, get_db_sync_config,
-    get_file_state_by_local_path, get_file_state_by_remote_id, get_key_password, get_session_tokens,
-    list_local_dir, logout, open_captcha_window, read_local_file, rename_local_file,
-    restore_session_from_keyring, set_db_sync_config, set_file_sync_state, show_notification,
-    stat_local_file, store_key_password, store_tokens, trash_local_file, upsert_file_state,
-    write_local_file,
+    get_file_state_by_local_path, get_file_state_by_remote_id, get_home_dir, get_key_password,
+    get_local_root, get_session_tokens, list_dir_recursive, list_local_dir, logout,
+    open_captcha_window, read_local_file, rename_local_file, restore_session_from_keyring,
+    set_db_sync_config, set_file_sync_state, set_local_root, show_notification,
+    start_file_watcher, stat_local_file, store_key_password, store_tokens, trash_local_file,
+    upsert_file_state, validate_local_root, write_local_file,
 };
 use db::Db;
 use tauri::{
@@ -19,13 +20,6 @@ use tauri::{
     tray::TrayIconBuilder,
     Emitter, Manager,
 };
-
-#[tauri::command]
-fn get_sync_path() -> String {
-    std::env::var("HOME")
-        .map(|h| format!("{}/ProtonDrive", h))
-        .unwrap_or_else(|_| "~/ProtonDrive".into())
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -72,7 +66,6 @@ pub fn run() {
 
             setup_tray(app)?;
             setup_window_close_handler(app);
-            start_file_watcher(app);
             handle_minimized_flag(app);
 
             // Restore session from keyring in background
@@ -85,7 +78,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            get_sync_path,
             store_tokens,
             logout,
             get_auth_status,
@@ -99,6 +91,7 @@ pub fn run() {
             get_db_sync_config,
             set_db_sync_config,
             list_local_dir,
+            list_dir_recursive,
             read_local_file,
             write_local_file,
             delete_local_file,
@@ -112,6 +105,11 @@ pub fn run() {
             disable_autostart,
             store_key_password,
             get_key_password,
+            validate_local_root,
+            set_local_root,
+            get_local_root,
+            get_home_dir,
+            start_file_watcher,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -150,14 +148,6 @@ fn setup_window_close_handler(app: &tauri::App) {
             let _ = win.hide();
         }
     });
-}
-
-fn start_file_watcher(app: &tauri::App) {
-    let sync_path = std::env::var("HOME")
-        .map(|h| std::path::PathBuf::from(h).join("ProtonDrive"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/ProtonDrive"));
-
-    watcher::start_watcher(app.handle().clone(), sync_path);
 }
 
 fn handle_minimized_flag(app: &tauri::App) {

@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { LoginForm } from "./components/LoginForm";
 import { initDriveClient, deriveKeyPassword, refreshTokens, releaseDriveClient, setSessionExpiredCallback } from "./lib/drive";
 import { startSync, setSyncStatusCallback, SYNC_FOLDER_NAME } from "./lib/sync";
+import { defaultSyncPath } from "./lib/paths";
 import type { SyncStatus } from "./lib/sync";
 import { useLang } from "./lib/i18n";
 import { useTheme } from "./lib/theme";
@@ -206,15 +207,22 @@ function MainView({ onSessionExpired }: { onSessionExpired: () => void }) {
     setSessionExpiredCallback(onSessionExpired);
 
     async function init() {
-      const path = await invoke<string>("get_sync_path");
+      const localRoot = await invoke<string | null>("get_local_root");
       if (cancelled) return;
-      setSyncPath(path);
+
+      // No root configured yet — onboarding will set one.
+      if (!localRoot) {
+        setSyncPath(await defaultSyncPath());
+        return;
+      }
+      setSyncPath(localRoot);
 
       setSyncStatusCallback((s) => {
         if (!cancelled) setSyncStatus({ ...s });
       });
 
-      const stop = await startSync(path);
+      await invoke("start_file_watcher", { path: localRoot }).catch(console.error);
+      const stop = await startSync(localRoot);
       if (cancelled) { stop(); return; }
       stopSyncRef.current = stop;
 
