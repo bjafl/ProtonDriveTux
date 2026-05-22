@@ -158,3 +158,34 @@ your machine. Session tokens are stored in GNOME Keyring, not on disk.
 - **Single account only** — no multi-account support.
 - Proton's SDK has a breaking crypto change coming (ETA late 2026). All SDK calls
   are isolated in `src/lib/drive.ts` to minimise the migration surface.
+
+---
+
+## References
+
+Authentication (SRP) and sync behaviour were cross-referenced against Proton's
+own open-source code:
+
+- [ProtonDriveApps/win-drive](https://github.com/ProtonDriveApps/win-drive) —
+  Windows Drive client (C#). Reference for token refresh, revision upload,
+  rename/move handling, and write-stability detection.
+- [ProtonMail/WebClients](https://github.com/ProtonMail/WebClients) —
+  Web apps monorepo. Reference for SRP implementation and address key derivation.
+
+Neither codebase was copied — they were read for behaviour and protocol details.
+
+---
+
+## Contributing
+
+PRs and issues are welcome. This is a personal project and response time may vary,
+but improvements to the known gaps in [PLAN.md](PLAN.md) are especially appreciated.
+
+If you hit a bug or want to discuss an approach before writing code, open an issue first.
+
+---
+
+## Credits
+
+Co-created with [Claude](https://claude.ai) (Anthropic) as a learning project for
+Tauri + Linux desktop integration.
