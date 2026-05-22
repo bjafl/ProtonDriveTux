@@ -663,3 +663,160 @@ pub fn disable_autostart() -> Result<(), String> {
         Err(e) => Err(e.to_string()),
     }
 }
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    // ── count_files_capped ────────────────────────────────────────────────────
+
+    #[test]
+    fn count_files_capped_empty_dir_returns_zero() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(count_files_capped(dir.path(), 1000), 0);
+    }
+
+    #[test]
+    fn count_files_capped_counts_flat_files() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("a.txt"), "a").unwrap();
+        fs::write(dir.path().join("b.txt"), "b").unwrap();
+        fs::write(dir.path().join("c.txt"), "c").unwrap();
+        assert_eq!(count_files_capped(dir.path(), 1000), 3);
+    }
+
+    #[test]
+    fn count_files_capped_counts_files_in_subdirs() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("root.txt"), "r").unwrap();
+        let sub = dir.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("child.txt"), "c").unwrap();
+        assert_eq!(count_files_capped(dir.path(), 1000), 2);
+    }
+
+    #[test]
+    fn count_files_capped_stops_at_cap() {
+        let dir = TempDir::new().unwrap();
+        for i in 0..10 {
+            fs::write(dir.path().join(format!("{i}.txt")), "x").unwrap();
+        }
+        assert_eq!(count_files_capped(dir.path(), 3), 3);
+    }
+
+    // ── collect_recursive ─────────────────────────────────────────────────────
+
+    #[test]
+    fn collect_recursive_skips_trash_subdirectory() {
+        let dir = TempDir::new().unwrap();
+        let trash = dir.path().join(".trash");
+        fs::create_dir(&trash).unwrap();
+        fs::write(trash.join("deleted.txt"), "gone").unwrap();
+        fs::write(dir.path().join("kept.txt"), "keep").unwrap();
+
+        let mut out = Vec::new();
+        collect_recursive(dir.path(), dir.path(), &mut out, 1000).unwrap();
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rel_path, "kept.txt");
+    }
+
+    #[test]
+    fn collect_recursive_builds_relative_paths() {
+        let dir = TempDir::new().unwrap();
+        let sub = dir.path().join("docs");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("report.pdf"), "pdf").unwrap();
+
+        let mut out = Vec::new();
+        collect_recursive(dir.path(), dir.path(), &mut out, 1000).unwrap();
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rel_path, "docs/report.pdf");
+    }
+
+    #[test]
+    fn collect_recursive_honors_cap() {
+        let dir = TempDir::new().unwrap();
+        for i in 0..20 {
+            fs::write(dir.path().join(format!("{i}.txt")), "x").unwrap();
+        }
+        let mut out = Vec::new();
+        collect_recursive(dir.path(), dir.path(), &mut out, 5).unwrap();
+        assert!(out.len() <= 5);
+    }
+
+    #[test]
+    fn collect_recursive_populates_abs_path_and_size() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("file.txt"), "hello").unwrap();
+
+        let mut out = Vec::new();
+        collect_recursive(dir.path(), dir.path(), &mut out, 1000).unwrap();
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].size_bytes, 5);
+        assert!(out[0].abs_path.ends_with("file.txt"));
+        assert!(out[0].mtime_ms > 0);
+    }
+
+    // ── validate_local_root ───────────────────────────────────────────────────
+
+    #[test]
+    fn validate_local_root_rejects_relative_path() {
+        let result = validate_local_root("relative/path".to_string()).unwrap();
+        assert!(!result.valid);
+        assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn validate_local_root_rejects_system_dir() {
+        let result = validate_local_root("/etc/proton-test-folder".to_string()).unwrap();
+        assert!(!result.valid);
+        assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn validate_local_root_rejects_home_directory_itself() {
+        let home = std::env::var("HOME").expect("HOME must be set in test environment");
+        let result = validate_local_root(home).unwrap();
+        assert!(!result.valid);
+    }
+
+    #[test]
+    fn validate_local_root_rejects_path_outside_home() {
+        // /tmp is not under HOME on Linux (HOME is /home/…)
+        let result = validate_local_root("/tmp/some-folder".to_string()).unwrap();
+        // Either rejected as system dir or as outside HOME — either way, invalid
+        assert!(!result.valid);
+    }
+
+    #[test]
+    fn validate_local_root_accepts_nonexistent_path_under_home() {
+        let home = std::env::var("HOME").expect("HOME must be set in test environment");
+        let path = format!("{home}/nonexistent-proton-drive-test-zzzz9999");
+        let result = validate_local_root(path).unwrap();
+        assert!(result.valid, "expected valid, got error: {:?}", result.error);
+        assert!(!result.exists);
+        assert_eq!(result.file_count, 0);
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn validate_local_root_reports_file_count_for_existing_dir() {
+        let home = std::env::var("HOME").expect("HOME must be set in test environment");
+        let dir = TempDir::new_in(&home).unwrap();
+        fs::write(dir.path().join("one.txt"), "1").unwrap();
+        fs::write(dir.path().join("two.txt"), "2").unwrap();
+
+        let result = validate_local_root(dir.path().to_string_lossy().into_owned()).unwrap();
+        assert!(result.valid);
+        assert!(result.exists);
+        assert!(!result.is_empty);
+        assert_eq!(result.file_count, 2);
+    }
+}

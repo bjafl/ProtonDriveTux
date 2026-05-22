@@ -27,6 +27,10 @@ import {
   listFolderChildren,
   persistEventAnchor,
 } from "./drive";
+import { findWatchedFolderByPath } from "./syncHelpers";
+import type { WatchedFolderEntry } from "./syncHelpers";
+export type { SelectedFolderRecord } from "./syncHelpers";
+export { findWatchedFolderByPath };
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -52,18 +56,6 @@ interface FileState {
 interface FileStat {
   mtimeMs: number;
   sizeBytes: number;
-}
-
-export interface SelectedFolderRecord {
-  uid: string;
-  name: string;
-  drivePath: string; // relative to My Files root, e.g. "Work/Projects"
-  mode: "files" | "recursive";
-}
-
-interface WatchedFolderEntry {
-  localDir: string;            // absolute local path for this Drive folder
-  selectedRoot: SelectedFolderRecord;
 }
 
 // ── Module-level state ───────────────────────────────────────────────────────
@@ -203,19 +195,8 @@ async function buildWatchedFolderMap(
   }
 }
 
-/** Find the best-matching watched folder entry for a local absolute path. */
-function findWatchedFolderByLocalPath(
-  absPath: string,
-): { uid: string; entry: WatchedFolderEntry } | null {
-  let best: { uid: string; entry: WatchedFolderEntry; len: number } | null = null;
-  for (const [uid, entry] of watchedFolderUids) {
-    if (absPath === entry.localDir || absPath.startsWith(entry.localDir + "/")) {
-      if (!best || entry.localDir.length > best.len) {
-        best = { uid, entry, len: entry.localDir.length };
-      }
-    }
-  }
-  return best ? { uid: best.uid, entry: best.entry } : null;
+function findWatchedFolderByLocalPath(absPath: string) {
+  return findWatchedFolderByPath(absPath, watchedFolderUids);
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────

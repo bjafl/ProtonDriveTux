@@ -15,95 +15,19 @@ import { NodeType } from "@protontech/drive-sdk";
 import { listFolderChildren } from "../lib/drive";
 import type { SelectedFolderRecord } from "../lib/sync";
 import { useLang } from "../lib/i18n";
-
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-type SelectionState = "none" | "partial" | "files" | "recursive";
-
-interface FolderNode {
-  uid: string;
-  name: string;
-  parentUid: string | null;
-  drivePath: string;         // e.g. "Work/Projects" — built while traversing
-  children: FolderNode[] | null; // null = not yet loaded
-  expanded: boolean;
-  selection: SelectionState;
-}
+import {
+  cycleSelection,
+  recomputePartial,
+  collectSelected,
+  applyInitialSelection,
+  updateNodeInTree,
+} from "../lib/folderTreeHelpers";
+import type { FolderNode, SelectionState } from "../lib/folderTreeHelpers";
 
 export interface FolderTreeProps {
   driveRootUid: string;
   value: SelectedFolderRecord[];
   onChange: (selected: SelectedFolderRecord[]) => void;
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function cycleSelection(current: SelectionState): SelectionState {
-  if (current === "none" || current === "partial") return "files";
-  if (current === "files") return "recursive";
-  return "none"; // recursive → none
-}
-
-/**
- * After any selection change, recalculate the "partial" state for all ancestors.
- * A node is partial if any descendant is "files" or "recursive" and the node
- * itself is "none".
- */
-function recomputePartial(nodes: FolderNode[]): FolderNode[] {
-  function hasSelectedDescendant(node: FolderNode): boolean {
-    if (!node.children) return false;
-    return node.children.some(
-      (c) =>
-        c.selection === "files" ||
-        c.selection === "recursive" ||
-        c.selection === "partial" ||
-        hasSelectedDescendant(c),
-    );
-  }
-
-  function update(node: FolderNode): FolderNode {
-    const updatedChildren = node.children ? node.children.map(update) : null;
-    const updated = { ...node, children: updatedChildren };
-    if (updated.selection === "none" || updated.selection === "partial") {
-      updated.selection = hasSelectedDescendant(updated) ? "partial" : "none";
-    }
-    return updated;
-  }
-
-  return nodes.map(update);
-}
-
-/** Walk the tree and collect all nodes with selection "files" or "recursive". */
-function collectSelected(nodes: FolderNode[]): SelectedFolderRecord[] {
-  const result: SelectedFolderRecord[] = [];
-  function walk(node: FolderNode) {
-    if (node.selection === "files" || node.selection === "recursive") {
-      result.push({
-        uid: node.uid,
-        name: node.name,
-        drivePath: node.drivePath,
-        mode: node.selection,
-      });
-    }
-    node.children?.forEach(walk);
-  }
-  nodes.forEach(walk);
-  return result;
-}
-
-/** Build initial tree nodes from a value array (restored selection). */
-function applyInitialSelection(nodes: FolderNode[], value: SelectedFolderRecord[]): FolderNode[] {
-  const byUid = new Map(value.map((r) => [r.uid, r]));
-  function apply(node: FolderNode): FolderNode {
-    const record = byUid.get(node.uid);
-    return {
-      ...node,
-      selection: record ? record.mode : node.selection,
-      children: node.children ? node.children.map(apply) : null,
-    };
-  }
-  const applied = nodes.map(apply);
-  return recomputePartial(applied);
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -145,37 +69,25 @@ export function FolderTree({ driveRootUid, value, onChange }: FolderTreeProps) {
     return nodes;
   }
 
-  function updateTree(
-    nodes: FolderNode[],
-    uid: string,
-    updater: (n: FolderNode) => FolderNode,
-  ): FolderNode[] {
-    return nodes.map((node) => {
-      if (node.uid === uid) return updater(node);
-      if (node.children) {
-        return { ...node, children: updateTree(node.children, uid, updater) };
-      }
-      return node;
-    });
-  }
-
   async function handleExpand(node: FolderNode) {
     if (node.children !== null) {
-      // Already loaded — just toggle.
       setRoots((prev) =>
-        prev ? recomputePartial(updateTree(prev, node.uid, (n) => ({ ...n, expanded: !n.expanded }))) : prev,
+        prev
+          ? recomputePartial(
+              updateNodeInTree(prev, node.uid, (n) => ({ ...n, expanded: !n.expanded })),
+            )
+          : prev,
       );
       return;
     }
 
-    // Lazy-load children.
     setLoadingUids((s) => new Set(s).add(node.uid));
     try {
       const children = await fetchChildren(node.uid, node.drivePath);
       setRoots((prev) =>
         prev
           ? recomputePartial(
-              updateTree(prev, node.uid, (n) => ({ ...n, children, expanded: true })),
+              updateNodeInTree(prev, node.uid, (n) => ({ ...n, children, expanded: true })),
             )
           : prev,
       );
@@ -192,7 +104,7 @@ export function FolderTree({ driveRootUid, value, onChange }: FolderTreeProps) {
     setRoots((prev) => {
       if (!prev) return prev;
       const next = recomputePartial(
-        updateTree(prev, node.uid, (n) => ({
+        updateNodeInTree(prev, node.uid, (n) => ({
           ...n,
           selection: cycleSelection(n.selection),
         })),

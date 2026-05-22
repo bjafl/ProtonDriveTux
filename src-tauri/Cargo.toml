@@ -37,3 +37,5 @@ url = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }
 notify-rust = "4"
 
+[dev-dependencies]
+tempfile = "3"
