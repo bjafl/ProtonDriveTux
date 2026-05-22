@@ -15,7 +15,6 @@ export function createHttpClient(
   function baseHeaders(extra?: Headers): Headers {
     const headers = new Headers(extra);
     headers.set("x-pm-appversion", APP_VERSION);
-    headers.set("Content-Type", "application/json");
     const token = getAccessToken();
     const uid = getUid();
     if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -39,6 +38,10 @@ export function createHttpClient(
 
     if ("json" in request && request.json !== undefined) {
       body = JSON.stringify(request.json);
+      // Only JSON requests get this header; binary block uploads must not.
+      if (!headers.has("Content-Type")) {
+        headers.set("Content-Type", "application/json");
+      }
     } else if (request.body !== undefined) {
       body = request.body;
     }
