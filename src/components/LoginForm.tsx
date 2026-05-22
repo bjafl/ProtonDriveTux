@@ -8,6 +8,8 @@ import {
   submitTotp,
 } from "../lib/auth";
 import { initDriveClient, deriveKeyPassword } from "../lib/drive";
+import { useLang } from "../lib/i18n";
+import { useTheme } from "../lib/theme";
 
 interface Props {
   onLoginSuccess: () => void;
@@ -33,12 +35,11 @@ export function LoginForm({ onLoginSuccess }: Props) {
   const [status, setStatus] = useState<string | null>(null);
   const [hvMethods, setHvMethods] = useState<string[]>([]);
   const unlistenRef = useRef<UnlistenFn | null>(null);
+  const { t, toggleLang } = useLang();
+  const { theme, toggleTheme } = useTheme();
 
-  // Clean up captcha listener on unmount.
   useEffect(() => {
-    return () => {
-      unlistenRef.current?.();
-    };
+    return () => { unlistenRef.current?.(); };
   }, []);
 
   async function openCaptchaWindow(hvToken: string, methods: string[]) {
@@ -53,7 +54,11 @@ export function LoginForm({ onLoginSuccess }: Props) {
     unlistenRef.current = unlisten;
 
     try {
-      await invoke("open_captcha_window", { token: hvToken, methods });
+      await invoke("open_captcha_window", {
+        token: hvToken,
+        methods,
+        theme: theme === "dark" ? "dark" : "light",
+      });
       setStep("captcha");
     } catch (err) {
       unlisten();
@@ -69,12 +74,7 @@ export function LoginForm({ onLoginSuccess }: Props) {
     try {
       const result = await startLoginWithCaptcha(username, password, solvedToken);
       if (result.twoFactorRequired) {
-        setPartial({
-          uid: result.uid,
-          accessToken: result.accessToken,
-          refreshToken: result.refreshToken,
-          userId: result.userId,
-        });
+        setPartial({ uid: result.uid, accessToken: result.accessToken, refreshToken: result.refreshToken, userId: result.userId });
         setStep("totp");
         return;
       }
@@ -102,16 +102,11 @@ export function LoginForm({ onLoginSuccess }: Props) {
     setStatus(null);
     setLoading(true);
     try {
-      setStatus("Logger inn…");
+      setStatus(t.loggingIn);
       const result = await startLogin(username, password);
 
       if (result.twoFactorRequired) {
-        setPartial({
-          uid: result.uid,
-          accessToken: result.accessToken,
-          refreshToken: result.refreshToken,
-          userId: result.userId,
-        });
+        setPartial({ uid: result.uid, accessToken: result.accessToken, refreshToken: result.refreshToken, userId: result.userId });
         setStep("totp");
         setLoading(false);
         setStatus(null);
@@ -119,12 +114,7 @@ export function LoginForm({ onLoginSuccess }: Props) {
       }
 
       if (result.dualPasswordMode) {
-        setPartial({
-          uid: result.uid,
-          accessToken: result.accessToken,
-          refreshToken: result.refreshToken,
-          userId: result.userId,
-        });
+        setPartial({ uid: result.uid, accessToken: result.accessToken, refreshToken: result.refreshToken, userId: result.userId });
         setStep("mailbox");
         setLoading(false);
         setStatus(null);
@@ -138,7 +128,6 @@ export function LoginForm({ onLoginSuccess }: Props) {
         setLoading(false);
         setStatus(null);
         setHvMethods(err.methods);
-        console.log("[HV] methods:", err.methods, "token:", err.hvToken);
         await openCaptchaWindow(err.hvToken, err.methods);
         return;
       }
@@ -165,7 +154,6 @@ export function LoginForm({ onLoginSuccess }: Props) {
     }
   };
 
-  // Dual-password mode: user has a separate mailbox password for key decryption.
   const [mailboxPassword, setMailboxPassword] = useState("");
   const handleMailboxPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -193,16 +181,21 @@ export function LoginForm({ onLoginSuccess }: Props) {
   return (
     <div className="login-wrap">
       <div className="login-card">
-        <h1 className="login-title">Proton Drive Sync</h1>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.4rem", marginBottom: "-0.5rem" }}>
+          <button className="icon-btn" onClick={toggleTheme} title={theme === "dark" ? t.lightMode : t.darkMode}>
+            {theme === "dark" ? "☀" : "☾"}
+          </button>
+          <button className="icon-btn" onClick={toggleLang}>{t.langToggle}</button>
+        </div>
 
-        <p className="disclaimer-banner">
-          Dette er en uoffisiell tredjepartsapp ikke offisielt støttet av Proton.
-        </p>
+        <h1 className="login-title">{t.appName}</h1>
+
+        <p className="disclaimer-banner">{t.unofficialBanner}</p>
 
         {step === "credentials" && (
           <form onSubmit={handleCredentials} className="login-form">
             <div className="field">
-              <label htmlFor="username">Brukernavn</label>
+              <label htmlFor="username">{t.username}</label>
               <input
                 id="username"
                 type="text"
@@ -215,7 +208,7 @@ export function LoginForm({ onLoginSuccess }: Props) {
               />
             </div>
             <div className="field">
-              <label htmlFor="password">Passord</label>
+              <label htmlFor="password">{t.password}</label>
               <input
                 id="password"
                 type="password"
@@ -230,23 +223,21 @@ export function LoginForm({ onLoginSuccess }: Props) {
             {status && <p className="hint">{status}</p>}
             {error && <p className="login-error">{error}</p>}
             <button type="submit" className="login-btn" disabled={loading}>
-              {loading ? (status ?? "Logger inn…") : "Logg inn"}
+              {loading ? (status ?? t.loggingIn) : t.loginBtn}
             </button>
           </form>
         )}
 
         {step === "captcha" && (
           <div className="captcha-wrap">
+            <p className="hint">{t.captchaHint}</p>
             <p className="hint">
-              Proton krever verifisering. Fullfør utfordringen i vinduet som åpnet seg.
-            </p>
-            <p className="hint">
-              Metoder: <code>{hvMethods.join(", ") || "ukjent"}</code>
+              {t.captchaMethods} <code>{hvMethods.join(", ") || "ukjent"}</code>
             </p>
             {loading && <p className="hint">{status}</p>}
             {error && <p className="login-error">{error}</p>}
             <button type="button" className="back-btn" onClick={handleCaptchaBack}>
-              ← Tilbake
+              {t.back}
             </button>
           </div>
         )}
@@ -254,7 +245,7 @@ export function LoginForm({ onLoginSuccess }: Props) {
         {step === "totp" && (
           <form onSubmit={handleTotp} className="login-form">
             <div className="field">
-              <label htmlFor="totp">Engangskode (2FA)</label>
+              <label htmlFor="totp">{t.totp}</label>
               <input
                 id="totp"
                 type="text"
@@ -273,23 +264,21 @@ export function LoginForm({ onLoginSuccess }: Props) {
                 className="back-btn"
                 onClick={() => { setStep("credentials"); setTotp(""); setError(null); setPartial(null); }}
               >
-                ← Tilbake
+                {t.back}
               </button>
             </div>
             {error && <p className="login-error">{error}</p>}
             <button type="submit" className="login-btn" disabled={loading}>
-              {loading ? "Bekreft…" : "Bekreft"}
+              {loading ? t.confirmBtn : t.confirmBtn}
             </button>
           </form>
         )}
 
         {step === "mailbox" && (
           <form onSubmit={handleMailboxPassword} className="login-form">
-            <p className="hint">
-              Kontoen din bruker separat postboks-passord. Skriv inn postboks-passordet for å låse opp krypteringsnøkler.
-            </p>
+            <p className="hint">{t.mailboxHint}</p>
             <div className="field">
-              <label htmlFor="mailbox-password">Postboks-passord</label>
+              <label htmlFor="mailbox-password">{t.mailboxPassword}</label>
               <input
                 id="mailbox-password"
                 type="password"
@@ -306,12 +295,12 @@ export function LoginForm({ onLoginSuccess }: Props) {
                 className="back-btn"
                 onClick={() => { setStep("credentials"); setMailboxPassword(""); setError(null); setPartial(null); }}
               >
-                ← Tilbake
+                {t.back}
               </button>
             </div>
             {error && <p className="login-error">{error}</p>}
             <button type="submit" className="login-btn" disabled={loading}>
-              {loading ? "Låser opp…" : "Lås opp"}
+              {loading ? t.unlocking : t.unlockBtn}
             </button>
           </form>
         )}

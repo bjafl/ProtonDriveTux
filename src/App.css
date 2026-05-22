@@ -7,6 +7,8 @@
   --text: #1a1a2e;
   --text-muted: #666;
   --border: #e0e0e6;
+  --error-text: #d93025;
+  --error-bg: #fce8e6;
   --mono: "SF Mono", "Fira Mono", "Cascadia Code", monospace;
 
   font-family: system-ui, -apple-system, sans-serif;
@@ -256,8 +258,8 @@ code {
 
 .login-error {
   font-size: 0.82rem;
-  color: #d93025;
-  background: #fce8e6;
+  color: var(--error-text);
+  background: var(--error-bg);
   border-radius: 6px;
   padding: 0.5rem 0.75rem;
 }
@@ -334,13 +336,64 @@ code {
 }
 
 
+/* Explicit dark theme (set via data-theme attribute by JS) */
+[data-theme="dark"] {
+  --bg: #1a1a2e;
+  --card-bg: #222236;
+  --text: #e8e8f0;
+  --text-muted: #9090aa;
+  --border: #33334a;
+  --purple-light: #2d2060;
+  --error-text: #ff8080;
+  --error-bg: #3a1a1a;
+}
+
+/* Fallback for before JS runs: respect OS dark mode if data-theme not yet set */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #1a1a2e;
     --card-bg: #222236;
     --text: #e8e8f0;
     --text-muted: #9090aa;
     --border: #33334a;
     --purple-light: #2d2060;
+    --error-text: #ff8080;
+    --error-bg: #3a1a1a;
   }
+}
+
+/* ── Settings helpers ── */
+.field-check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.field-check input[type="checkbox"] {
+  accent-color: var(--purple);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+/* ── Topbar icon buttons ── */
+.icon-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-family: inherit;
+  padding: 0.25rem 0.55rem;
+  line-height: 1.4;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.icon-btn:hover {
+  border-color: var(--purple);
+  color: var(--purple);
 }
