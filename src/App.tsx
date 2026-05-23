@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { LoginForm } from "./components/LoginForm";
 import { Onboarding, isOnboardingNeeded } from "./components/Onboarding";
 import { initDriveClient, deriveKeyPassword, refreshTokens, releaseDriveClient, setSessionExpiredCallback } from "./lib/drive";
+import { AuthExpiredError } from "./lib/auth";
 import { startSync, setSyncStatusCallback, triggerFullSync, pauseSync, resumeSync, isSyncPaused } from "./lib/sync";
 import { defaultSyncPath } from "./lib/paths";
 import type { SyncStatus } from "./lib/sync";
@@ -45,9 +46,6 @@ interface FileState {
 
 type AppState = "loading" | "unlocking" | "loggedOut" | "onboarding" | "ready";
 
-function isAuthFailure(err: unknown): boolean {
-  return /failed: [4]\d\d/.test(String(err));
-}
 
 function UnlockForm({ onUnlocked, onSessionExpired }: { onUnlocked: () => void; onSessionExpired: () => void }) {
   const [password, setPassword] = useState("");
@@ -73,7 +71,7 @@ function UnlockForm({ onUnlocked, onSessionExpired }: { onUnlocked: () => void; 
         accessToken = refreshed.accessToken;
         refreshToken = refreshed.refreshToken;
       } catch (refreshErr) {
-        if (isAuthFailure(refreshErr)) {
+        if (refreshErr instanceof AuthExpiredError) {
           // Refresh token rejected — session is dead, must re-login.
           await invoke("logout").catch(console.error);
           releaseDriveClient();
@@ -96,9 +94,7 @@ function UnlockForm({ onUnlocked, onSessionExpired }: { onUnlocked: () => void; 
       }
       onUnlocked();
     } catch (err: unknown) {
-      // 4xx from any step (salts, refresh, init) means the session is invalid.
-      // Go straight to LoginForm — no need to manually click "Switch account".
-      if (isAuthFailure(err)) {
+      if (err instanceof AuthExpiredError) {
         onSessionExpired();
         return;
       }
@@ -509,7 +505,7 @@ export default function App() {
             accessToken = refreshed.accessToken;
             refreshToken = refreshed.refreshToken;
           } catch (refreshErr) {
-            if (isAuthFailure(refreshErr)) {
+            if (refreshErr instanceof AuthExpiredError) {
               await handleSessionExpired();
               return;
             }

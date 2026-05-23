@@ -23,6 +23,7 @@ import { createAccountProvider } from "./accountProvider";
 import { createHttpClient } from "./httpClient";
 import { initCrypto, createOpenPGPCryptoModule } from "./cryptoModule";
 import { createSrpModule, computeKeyPassword } from "./srpModule";
+import { AuthExpiredError } from "./auth";
 
 const BASE_URL = import.meta.env.VITE_PROTON_API_BASE ?? "https://mail.proton.me/api";
 const APP_VERSION =
@@ -83,9 +84,9 @@ async function refreshSession(): Promise<void> {
   });
 
   if (!resp.ok) {
-    // 4xx means the refresh token itself is rejected — session is dead.
     if (resp.status >= 400 && resp.status < 500) {
       _onSessionExpired?.();
+      throw new AuthExpiredError(resp.status);
     }
     throw new Error(`Token refresh failed: ${resp.status}`);
   }
@@ -127,7 +128,7 @@ export async function refreshTokens(
     body: JSON.stringify({ UID: uid, RefreshToken: refreshToken }),
   });
 
-  if (!resp.ok) throw new Error(`Token refresh failed: ${resp.status}`);
+  if (!resp.ok) throw new AuthExpiredError(resp.status);
   const data = (await resp.json()) as { AccessToken: string; RefreshToken: string };
 
   await invoke("store_tokens", {
@@ -281,7 +282,10 @@ export async function deriveKeyPassword(
       "x-pm-appversion": APP_VERSION,
     },
   });
-  if (!resp.ok) throw new Error(`Key salts request failed: ${resp.status}`);
+  if (!resp.ok) {
+    if (resp.status < 500) throw new AuthExpiredError(resp.status);
+    throw new Error(`Key salts request failed: ${resp.status}`);
+  }
   const data = (await resp.json()) as {
     KeySalts: Array<{ ID: string; KeySalt: string | null }>;
   };

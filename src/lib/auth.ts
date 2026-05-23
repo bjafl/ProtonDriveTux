@@ -33,6 +33,14 @@ export class HumanVerificationError extends Error {
   }
 }
 
+/** Thrown when a session-critical request returns a 4xx — session is dead, must re-login. */
+export class AuthExpiredError extends Error {
+  constructor(public readonly status: number) {
+    super(`Session expired (HTTP ${status})`);
+    this.name = "AuthExpiredError";
+  }
+}
+
 interface ApiErrorResponse {
   Code: number;
   Error?: string;
