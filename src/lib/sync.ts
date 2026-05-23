@@ -314,6 +314,9 @@ export async function triggerFullSync(): Promise<void> {
 // ── Public API ───────────────────────────────────────────────────────────────
 
 export async function startSync(): Promise<() => void> {
+  // Clear transient state from any previous run to prevent stale entries.
+  suppressUntil.clear();
+  recentlyUploaded.clear();
   console.log("[sync] Loading sync config from DB…");
   const { localRoot, selectedFolders, treeEventScopeId } = await loadSyncConfig();
   console.log(
@@ -354,6 +357,11 @@ export async function startSync(): Promise<() => void> {
   console.log("[sync] Sync engine started");
 
   const periodicInterval = setInterval(() => {
+    // Evict expired suppress entries to prevent unbounded map growth.
+    const now = Date.now();
+    for (const [path, until] of suppressUntil) {
+      if (now > until) suppressUntil.delete(path);
+    }
     triggerFullSync().catch(console.error);
   }, 5 * 60 * 1000);
 
@@ -546,8 +554,9 @@ async function handleLocalUpsert(absPath: string, checkStability: boolean): Prom
       localPath: absPath,
     });
 
-    if (existing?.sizeBytes !== null && existing && stat.sizeBytes === existing.sizeBytes) {
-      console.log("[sync] skipping upload — size unchanged:", absPath);
+    if (existing && existing.sizeBytes !== null && existing.modifiedAt !== null &&
+        stat.sizeBytes === existing.sizeBytes && stat.mtimeMs === existing.modifiedAt) {
+      console.log("[sync] skipping upload — size and mtime unchanged:", absPath);
       return;
     }
 
@@ -579,6 +588,8 @@ async function handleLocalUpsert(absPath: string, checkStability: boolean): Prom
         const uploader = await getFileRevisionUploader(existing.remoteId, metadata);
         const controller = await uploader.uploadFromFile(file, [], () => {});
         ({ nodeUid, nodeRevisionUid } = await controller.completion());
+        recentlyUploaded.add(nodeUid);
+        setTimeout(() => recentlyUploaded.delete(nodeUid), SUPPRESS_MS);
         console.log("[sync] uploaded revision:", absPath, "→", nodeUid, "rev:", nodeRevisionUid);
       } catch (err) {
         const msg = String(err);
@@ -661,8 +672,17 @@ async function handleDriveEvent(event: DriveEvent): Promise<void> {
     console.log("[sync] ignoring drive event type:", event.type);
   }
 
+  // Capture type before the `in`-check narrows the union to never in the else branch.
+  const eventType = event.type;
   if ("treeEventScopeId" in event && "eventId" in event) {
     persistEventAnchor(event.treeEventScopeId, event.eventId).catch(() => {});
+  } else if (
+    eventType === DriveEventType.TreeRefresh ||
+    eventType === DriveEventType.FastForward
+  ) {
+    // These event types did not carry eventId — anchor not advanced.
+    // Events since the refresh may replay from before it on restart (harmless but redundant).
+    console.warn("[sync]", eventType, "did not carry eventId — event anchor not updated");
   }
 }
 
@@ -736,22 +756,31 @@ async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
       }
     }
 
-    // Stream chunks directly to disk via write_local_file_chunk to avoid accumulating
-    // the entire file in memory before writing — crucial for large files.
-    suppressPath(expectedPath);
-    await invoke("truncate_local_file", { absPath: expectedPath });
+    // Write to a temp path first; rename atomically on success so a failed download
+    // never leaves a zero-byte or partial file at the final path.
+    const tmpPath = expectedPath + ".pd-tmp";
+    await invoke("truncate_local_file", { absPath: tmpPath });
 
     const downloader = await getFileDownloader(nodeUid);
-    const writable = new WritableStream<Uint8Array>({
-      async write(chunk) {
-        // btoa per chunk (typically 256 KB) is fast and keeps peak memory bounded.
-        let binary = "";
-        for (let i = 0; i < chunk.length; i++) binary += String.fromCharCode(chunk[i]);
-        await invoke("write_local_file_chunk", { absPath: expectedPath, contentB64: btoa(binary) });
-      },
-    });
-    const dlController = downloader.downloadToStream(writable, () => {});
-    await dlController.completion();
+    try {
+      const writable = new WritableStream<Uint8Array>({
+        async write(chunk) {
+          // btoa per chunk (typically 256 KB) is fast and keeps peak memory bounded.
+          let binary = "";
+          for (let i = 0; i < chunk.length; i++) binary += String.fromCharCode(chunk[i]);
+          await invoke("write_local_file_chunk", { absPath: tmpPath, contentB64: btoa(binary) });
+        },
+      });
+      const dlController = downloader.downloadToStream(writable, () => {});
+      await dlController.completion();
+    } catch (err) {
+      await invoke("delete_local_file", { absPath: tmpPath }).catch(() => {});
+      throw err;
+    }
+
+    // Suppress the destination before rename so inotify doesn't re-upload the downloaded file.
+    suppressPath(expectedPath);
+    await invoke("rename_local_file", { fromPath: tmpPath, toPath: expectedPath });
     addRecentlySynced(expectedPath, "down");
 
     const revision = node.activeRevision;

@@ -38,9 +38,28 @@ pub fn run() {
         // pd-file:// serves raw file bytes to the WebView without base64 encoding, used by
         // the upload path in sync.ts to avoid the O(n) IPC+base64 memory spike.
         // URI form: pd-file:///abs/path/to/file — path() gives /abs/path/to/file.
-        .register_uri_scheme_protocol("pd-file", |_app, request| {
-            let path = request.uri().path().to_string();
-            match std::fs::read(&path) {
+        .register_uri_scheme_protocol("pd-file", |app, request| {
+            let path_str = request.uri().path().to_string();
+
+            // Guard: reject paths that escape the configured sync root to prevent path traversal.
+            let allowed = (|| -> Option<bool> {
+                let db = app.app_handle().state::<Db>();
+                let root = db.get_sync_config("local_root").ok().flatten()?;
+                let canonical_root = std::fs::canonicalize(&root).ok()?;
+                let canonical_path = std::fs::canonicalize(&path_str).ok()?;
+                Some(canonical_path.starts_with(&canonical_root))
+            })()
+            .unwrap_or(false);
+
+            if !allowed {
+                return tauri::http::Response::builder()
+                    .status(403)
+                    .header("Content-Type", "text/plain")
+                    .body(b"forbidden".to_vec())
+                    .unwrap();
+            }
+
+            match std::fs::read(&path_str) {
                 Ok(bytes) => tauri::http::Response::builder()
                     .status(200)
                     .header("Content-Type", "application/octet-stream")
@@ -245,7 +264,7 @@ fn position_and_show_popup(popup: &tauri::WebviewWindow, click_pos: tauri::Physi
 }
 
 fn setup_window_close_handler(app: &tauri::App) {
-    let window = app.get_webview_window("main").unwrap();
+    let Some(window) = app.get_webview_window("main") else { return };
     let win = window.clone();
     window.on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
