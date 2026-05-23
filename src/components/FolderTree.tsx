@@ -101,17 +101,15 @@ export function FolderTree({ driveRootUid, value, onChange }: FolderTreeProps) {
   }
 
   function handleSelect(node: FolderNode) {
-    setRoots((prev) => {
-      if (!prev) return prev;
-      const next = recomputePartial(
-        updateNodeInTree(prev, node.uid, (n) => ({
-          ...n,
-          selection: cycleSelection(n.selection),
-        })),
-      );
-      onChange(collectSelected(next));
-      return next;
-    });
+    if (!roots) return;
+    const next = recomputePartial(
+      updateNodeInTree(roots, node.uid, (n) => ({
+        ...n,
+        selection: cycleSelection(n.selection),
+      })),
+    );
+    setRoots(next);
+    onChange(collectSelected(next));
   }
 
   if (roots === null) {

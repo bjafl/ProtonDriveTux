@@ -25,8 +25,9 @@ Working prototype. The core sync loop runs but has known gaps — see [PLAN.md](
 | Remote rename/move → local rename | ✅ |
 | Token refresh on 401 | ✅ |
 | System tray, autostart | ✅ |
-| Recursive folder sync on cold start | ⚠️ subdirs missed ([G1](PLAN.md)) |
-| Local deletes → Drive | ❌ not implemented ([G4](PLAN.md)) |
+| Recursive folder sync on cold start | ✅ |
+| Local deletes → Drive (trash) | ✅ |
+| Watcher stop/restart on path change | ✅ |
 | Large file streaming | ❌ full base64 round-trip ([G2](PLAN.md)) |
 
 ---
@@ -151,8 +152,7 @@ your machine. Session tokens are stored in GNOME Keyring, not on disk.
 
 ## Known limitations
 
-- **Local deletes are not synced to Drive** (files deleted locally stay in Drive).
-- **Recursive folders miss subdirectories on cold start** (fixed after first watcher event).
+- **Local deletes move files to Drive trash** (not permanent delete).
 - **No streaming for large files** — files are buffered in full through IPC.
 - **System tray requires** `gnome-shell-extension-appindicator` on GNOME Shell.
 - **Single account only** — no multi-account support.

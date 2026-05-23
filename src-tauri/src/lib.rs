@@ -5,13 +5,14 @@ mod keyring;
 mod watcher;
 
 use commands::{
-    AppState, close_captcha_window, delete_local_file, disable_autostart, enable_autostart,
-    get_all_file_states, get_auth_status, get_autostart_enabled, get_db_sync_config,
-    get_file_state_by_local_path, get_file_state_by_remote_id, get_home_dir, get_key_password,
-    get_local_root, get_session_tokens, list_dir_recursive, list_local_dir, logout,
-    open_captcha_window, read_local_file, rename_local_file, restore_session_from_keyring,
-    set_db_sync_config, set_file_sync_state, set_local_root, show_notification,
-    start_file_watcher, stat_local_file, store_key_password, store_tokens, trash_local_file,
+    AppState, close_captcha_window, delete_file_state, delete_local_dir, delete_local_file,
+    disable_autostart, enable_autostart, ensure_local_dir, get_all_file_states, get_auth_status,
+    get_autostart_enabled, get_db_sync_config, get_file_state_by_local_path,
+    get_file_state_by_remote_id, get_home_dir, get_key_password, get_local_root,
+    get_session_tokens, list_dir_recursive, list_local_dir, logout, open_captcha_window,
+    read_local_file, rename_local_file, restore_session_from_keyring, set_db_sync_config,
+    set_file_sync_state, set_local_root, show_notification, start_file_watcher, stat_local_file,
+    stop_file_watcher, store_key_password, store_tokens, trash_local_file, update_tray_status,
     upsert_file_state, validate_local_root, write_local_file,
 };
 use db::Db;
@@ -23,6 +24,12 @@ use tauri::{
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Suppress the one-time deprecation g_warning from libayatana-appindicator3.
+    // The tray-icon crate already links against the GTK3 variant; there is no
+    // glib-only variant supported yet, so the warning cannot be avoided otherwise.
+    #[cfg(target_os = "linux")]
+    commands::suppress_appindicator_warning();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
@@ -110,18 +117,29 @@ pub fn run() {
             get_local_root,
             get_home_dir,
             start_file_watcher,
+            stop_file_watcher,
+            delete_file_state,
+            delete_local_dir,
+            ensure_local_dir,
+            update_tray_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    // Initial menu: just show/quit; the frontend updates it via update_tray_status.
+    let status = MenuItem::with_id(app, "status", "✓  Synkronisert", false, None::<&str>)?;
+    let sep = tauri::menu::PredefinedMenuItem::separator(app)?;
     let show = MenuItem::with_id(app, "show", "Åpne", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Avslutt", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let menu = Menu::with_items(app, &[&status, &sep, &show, &quit])?;
 
-    TrayIconBuilder::new()
-        .icon(app.default_window_icon().unwrap().clone())
+    let icon_bytes = include_bytes!("../icons/tray-idle.png");
+    let icon = tauri::image::Image::from_bytes(icon_bytes)?;
+
+    TrayIconBuilder::with_id("main")
+        .icon(icon)
         .menu(&menu)
         .tooltip("Proton Drive Sync")
         .on_menu_event(|app, event| match event.id.as_ref() {

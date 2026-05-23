@@ -28,6 +28,7 @@ export type Translations = {
   logout: string;
   syncingItems: (n: number) => string;
   syncIdle: string;
+  syncNow: string;
   localFolder: string;
   driveFolder: string;
   errors: string;
@@ -52,6 +53,10 @@ export type Translations = {
   onboardingLocalRootNonEmptyWarning: (count: number) => string;
   onboardingFolderSelectTitle: string;
   onboardingFolderSelectHint: string;
+  onboardingRootLabel: string;
+  onboardingRootNone: string;
+  onboardingRootFiles: string;
+  onboardingRootAll: string;
   onboardingStartSync: string;
   onboardingNext: string;
   onboardingBack: string;
@@ -107,6 +112,7 @@ export const T: Record<Lang, Translations> = {
     logout: "Logg ut",
     syncingItems: (n: number) => `Synkroniserer ${n} element(er)…`,
     syncIdle: "Kjører — sync-motor aktiv",
+    syncNow: "Synk nå",
     localFolder: "Lokal mappe:",
     driveFolder: "Drive-mappe:",
     errors: "Feil:",
@@ -130,6 +136,10 @@ export const T: Record<Lang, Translations> = {
     onboardingLocalRootNonEmptyWarning: (count: number) => `Mappen inneholder ${count} fil(er). Eksisterende filer slås sammen med Drive-innholdet.`,
     onboardingFolderSelectTitle: "Velg Drive-mapper å synkronisere",
     onboardingFolderSelectHint: "Klikk på ○ for å velge. ● = bare direkte filer, ⬤ = inkluder undermapper. Du kan fortsette uten å velge noen.",
+    onboardingRootLabel: "Min Disk (rot):",
+    onboardingRootNone: "Ingen",
+    onboardingRootFiles: "Bare filer",
+    onboardingRootAll: "Alt",
     onboardingStartSync: "Start synkronisering →",
     onboardingNext: "Neste →",
     onboardingBack: "← Tilbake",
@@ -179,6 +189,7 @@ export const T: Record<Lang, Translations> = {
     logout: "Log out",
     syncingItems: (n: number) => `Syncing ${n} item(s)…`,
     syncIdle: "Running — sync engine active",
+    syncNow: "Sync now",
     localFolder: "Local folder:",
     driveFolder: "Drive folder:",
     errors: "Errors:",
@@ -202,6 +213,10 @@ export const T: Record<Lang, Translations> = {
     onboardingLocalRootNonEmptyWarning: (count: number) => `This folder contains ${count} file(s). Existing files will be merged with your Drive content.`,
     onboardingFolderSelectTitle: "Choose Drive folders to sync",
     onboardingFolderSelectHint: "Click ○ to select. ● = direct files only, ⬤ = include subfolders. You can continue without selecting any.",
+    onboardingRootLabel: "My Drive (root):",
+    onboardingRootNone: "None",
+    onboardingRootFiles: "Files only",
+    onboardingRootAll: "All",
     onboardingStartSync: "Start Sync →",
     onboardingNext: "Next →",
     onboardingBack: "← Back",

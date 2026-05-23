@@ -2,7 +2,8 @@ use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
@@ -13,16 +14,23 @@ pub struct WatchEvent {
     pub kind: String, // "create" | "modify" | "delete"
 }
 
-pub fn start_watcher(app: AppHandle, watch_path: PathBuf) {
-    std::thread::spawn(move || {
-        if !watch_path.exists() {
-            if let Err(e) = std::fs::create_dir_all(&watch_path) {
-                eprintln!("[watcher] Klarte ikke opprette {:?}: {e}", watch_path);
-                return;
-            }
+/// Spawns the inotify watcher thread. Returns a stop flag — set it to `true`
+/// to signal the thread to exit on its next loop iteration.
+pub fn start_watcher(app: AppHandle, watch_path: PathBuf) -> Arc<AtomicBool> {
+    // Create the directory synchronously so callers can scan it immediately
+    // after this function returns, without racing the spawned thread.
+    if !watch_path.exists() {
+        if let Err(e) = std::fs::create_dir_all(&watch_path) {
+            eprintln!("[watcher] Klarte ikke opprette {:?}: {e}", watch_path);
+        } else {
             eprintln!("[watcher] Opprettet sync-mappe: {:?}", watch_path);
         }
+    }
 
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_thread = Arc::clone(&stop);
+
+    std::thread::spawn(move || {
         let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
 
         let mut watcher = match RecommendedWatcher::new(
@@ -52,9 +60,14 @@ pub fn start_watcher(app: AppHandle, watch_path: PathBuf) {
         let mut deadline: Option<Instant> = None;
 
         loop {
+            if stop_thread.load(Ordering::Relaxed) {
+                eprintln!("[watcher] Stop flag set, exiting");
+                break;
+            }
+
             let timeout = deadline
                 .map(|d| d.saturating_duration_since(Instant::now()))
-                .unwrap_or(Duration::from_secs(60));
+                .unwrap_or(Duration::from_millis(500));
 
             match rx.recv_timeout(timeout) {
                 Ok(Ok(event)) => {
@@ -86,4 +99,6 @@ pub fn start_watcher(app: AppHandle, watch_path: PathBuf) {
             }
         }
     });
+
+    stop
 }

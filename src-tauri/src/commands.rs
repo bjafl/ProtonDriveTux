@@ -1,6 +1,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 
 use crate::auth::{AuthSession, ProtonAuth};
@@ -9,12 +10,14 @@ use crate::keyring;
 
 pub struct AppState {
     pub session: Mutex<Option<AuthSession>>,
+    pub watcher_stop: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         Self {
             session: Mutex::new(None),
+            watcher_stop: Mutex::new(None),
         }
     }
 }
@@ -40,6 +43,7 @@ pub struct SessionTokens {
 pub struct FileStat {
     pub mtime_ms: i64,
     pub size_bytes: i64,
+    pub is_dir: bool,
 }
 
 /// Called by JS after a successful SRP login to persist the session in GNOME Keyring.
@@ -316,6 +320,12 @@ pub fn set_db_sync_config(
 
 // ── Local file I/O commands ──────────────────────────────────────────────────
 
+/// Creates the directory at abs_path (including parents) if it doesn't already exist.
+#[tauri::command]
+pub fn ensure_local_dir(abs_path: String) -> Result<(), String> {
+    std::fs::create_dir_all(&abs_path).map_err(|e| format!("create_dir_all {abs_path}: {e}"))
+}
+
 /// Lists regular files (non-directories) directly inside abs_path. Returns absolute paths.
 #[tauri::command]
 pub fn list_local_dir(abs_path: String) -> Result<Vec<String>, String> {
@@ -386,6 +396,16 @@ pub fn delete_local_file(abs_path: String) -> Result<(), String> {
     }
 }
 
+/// Recursively deletes a local directory. Silently succeeds if the path does not exist.
+#[tauri::command]
+pub fn delete_local_dir(abs_path: String) -> Result<(), String> {
+    match std::fs::remove_dir_all(&abs_path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("remove_dir_all {abs_path}: {e}")),
+    }
+}
+
 /// Returns the modification time (in ms since Unix epoch) and size of a local file.
 #[tauri::command]
 pub fn stat_local_file(abs_path: String) -> Result<FileStat, String> {
@@ -400,6 +420,7 @@ pub fn stat_local_file(abs_path: String) -> Result<FileStat, String> {
     Ok(FileStat {
         mtime_ms,
         size_bytes: meta.len() as i64,
+        is_dir: meta.is_dir(),
     })
 }
 
@@ -603,9 +624,30 @@ fn collect_recursive(
 // ── File watcher (on-demand) ──────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn start_file_watcher(path: String, app: tauri::AppHandle) -> Result<(), String> {
-    crate::watcher::start_watcher(app, std::path::PathBuf::from(path));
+pub fn start_file_watcher(
+    path: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Stop any existing watcher before starting a new one.
+    if let Some(old_stop) = state.watcher_stop.lock().unwrap().take() {
+        old_stop.store(true, Ordering::Relaxed);
+    }
+    let stop = crate::watcher::start_watcher(app, std::path::PathBuf::from(path));
+    *state.watcher_stop.lock().unwrap() = Some(stop);
     Ok(())
+}
+
+#[tauri::command]
+pub fn stop_file_watcher(state: State<'_, AppState>) {
+    if let Some(stop) = state.watcher_stop.lock().unwrap().take() {
+        stop.store(true, Ordering::Relaxed);
+    }
+}
+
+#[tauri::command]
+pub fn delete_file_state(remote_id: String, db: State<'_, Db>) -> Result<(), String> {
+    db.delete_by_remote_id(&remote_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -661,6 +703,149 @@ pub fn disable_autostart() -> Result<(), String> {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.to_string()),
+    }
+}
+
+// ── Tray status update ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentFile {
+    pub name: String,
+    pub direction: String, // "up" | "down"
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrayStatusPayload {
+    pub syncing: bool,
+    pub active_count: usize,
+    pub recent_files: Vec<RecentFile>,
+    pub error_count: usize,
+}
+
+#[tauri::command]
+pub fn update_tray_status(
+    app: tauri::AppHandle,
+    payload: TrayStatusPayload,
+) -> Result<(), String> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    #[allow(unused_imports)]
+    use tauri::Manager;
+
+    let tray = match app.tray_by_id("main") {
+        Some(t) => t,
+        None => return Ok(()),
+    };
+
+    // Build status line text.
+    let status_text = if payload.syncing {
+        format!("↕  Synkroniserer {} element(er)…", payload.active_count)
+    } else if payload.error_count > 0 {
+        format!("⚠  {} feil", payload.error_count)
+    } else {
+        "✓  Synkronisert".to_string()
+    };
+
+    // Tooltip (plain text, no Unicode that causes pango errors on some setups).
+    let tooltip = if payload.syncing {
+        format!("Proton Drive Sync — synkroniserer {}", payload.active_count)
+    } else if payload.error_count > 0 {
+        format!("Proton Drive Sync — {} feil", payload.error_count)
+    } else {
+        "Proton Drive Sync — synkronisert".to_string()
+    };
+    tray.set_tooltip(Some(tooltip.as_str())).map_err(|e| e.to_string())?;
+
+    // Build tray icon to reflect state.
+    let icon_bytes: &[u8] = if payload.syncing {
+        include_bytes!("../icons/tray-syncing.png")
+    } else if payload.error_count > 0 {
+        include_bytes!("../icons/tray-error.png")
+    } else {
+        include_bytes!("../icons/tray-idle.png")
+    };
+    let icon = tauri::image::Image::from_bytes(icon_bytes).map_err(|e| e.to_string())?;
+    tray.set_icon(Some(icon)).map_err(|e| e.to_string())?;
+
+    // Rebuild menu.
+    let status_item =
+        MenuItem::with_id(&app, "status", &status_text, false, None::<&str>)
+            .map_err(|e| e.to_string())?;
+    let sep1 = PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?;
+
+    let mut dyn_items: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = Vec::new();
+
+    if !payload.recent_files.is_empty() {
+        let heading = MenuItem::with_id(&app, "recent-hd", "Nylig synkronisert:", false, None::<&str>)
+            .map_err(|e| e.to_string())?;
+        dyn_items.push(Box::new(heading));
+        for (i, f) in payload.recent_files.iter().take(8).enumerate() {
+            let arrow = if f.direction == "up" { "↑" } else { "↓" };
+            let label = format!("  {}  {}", arrow, f.name);
+            let item = MenuItem::with_id(&app, format!("rf-{i}"), &label, false, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            dyn_items.push(Box::new(item));
+        }
+    }
+
+    let sep2 = PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?;
+    let show = MenuItem::with_id(&app, "show", "Åpne", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let quit = MenuItem::with_id(&app, "quit", "Avslutt", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+
+    // Collect all items as trait-object refs.
+    let mut refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![&status_item, &sep1];
+    for item in &dyn_items {
+        refs.push(item.as_ref());
+    }
+    refs.extend_from_slice(&[&sep2, &show, &quit]);
+
+    let menu = Menu::with_items(&app, &refs).map_err(|e| e.to_string())?;
+    tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+// ── GLib warning suppressor ──────────────────────────────────────────────────
+
+/// Silences the one-time deprecation warning that libayatana-appindicator3
+/// emits via g_warning() on initialisation. The tray-icon crate correctly
+/// links against libayatana-appindicator3-1 (GTK3); there is no glib-only
+/// variant supported by tray-icon yet, so this warning cannot be avoided at
+/// the library level.
+#[cfg(target_os = "linux")]
+pub fn suppress_appindicator_warning() {
+    use std::ffi::{c_char, c_uint, c_void};
+
+    #[link(name = "glib-2.0")]
+    extern "C" {
+        fn g_log_set_handler(
+            log_domain: *const c_char,
+            log_levels: c_uint,
+            log_func: unsafe extern "C" fn(*const c_char, c_uint, *const c_char, *mut c_void),
+            user_data: *mut c_void,
+        ) -> c_uint;
+    }
+
+    unsafe extern "C" fn noop(
+        _domain: *const c_char,
+        _level: c_uint,
+        _message: *const c_char,
+        _data: *mut c_void,
+    ) {
+    }
+
+    // G_LOG_LEVEL_WARNING = 1 << 4 = 16
+    let domain = b"libayatana-appindicator\0";
+    unsafe {
+        g_log_set_handler(
+            domain.as_ptr().cast(),
+            16,
+            noop,
+            std::ptr::null_mut(),
+        );
     }
 }
 
@@ -845,6 +1030,24 @@ mod tests {
     #[test]
     fn delete_local_file_succeeds_silently_on_missing() {
         assert!(delete_local_file("/tmp/proton_test_missing_zzzz.txt".to_string()).is_ok());
+    }
+
+    // ── delete_local_dir ─────────────────────────────────────────────────────
+
+    #[test]
+    fn delete_local_dir_removes_directory_tree() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("subtree");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(target.join("child")).unwrap();
+        fs::write(target.join("child").join("file.txt"), "data").unwrap();
+        delete_local_dir(target.to_string_lossy().into_owned()).unwrap();
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn delete_local_dir_succeeds_silently_on_missing() {
+        assert!(delete_local_dir("/tmp/proton_test_missing_dir_zzzz".to_string()).is_ok());
     }
 
     // ── rename_local_file ─────────────────────────────────────────────────────

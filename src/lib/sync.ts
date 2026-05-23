@@ -26,10 +26,12 @@ import {
   getNode,
   listFolderChildren,
   persistEventAnchor,
+  trashNode,
+  findOrCreateFolder,
 } from "./drive";
 import { findWatchedFolderByPath } from "./syncHelpers";
-import type { WatchedFolderEntry } from "./syncHelpers";
-export type { SelectedFolderRecord } from "./syncHelpers";
+import type { WatchedFolderEntry, SelectedFolderRecord } from "./syncHelpers";
+export type { SelectedFolderRecord };
 export { findWatchedFolderByPath };
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -56,6 +58,14 @@ interface FileState {
 interface FileStat {
   mtimeMs: number;
   sizeBytes: number;
+  isDir: boolean;
+}
+
+interface LocalFileEntry {
+  relPath: string;
+  absPath: string;
+  mtimeMs: number;
+  sizeBytes: number;
 }
 
 // ── Module-level state ───────────────────────────────────────────────────────
@@ -70,10 +80,37 @@ const SUPPRESS_MS = 5_000;
  */
 const watchedFolderUids = new Map<string, WatchedFolderEntry>();
 
-let _localRoot: string | null = null;
-
 let _status: SyncStatus = { active: [], errors: [] };
 let _statusCallback: ((s: SyncStatus) => void) | null = null;
+let _lastErrorNotificationMs = 0;
+let _fullSyncInProgress = false;
+const FULL_SYNC_LABEL = "__full_sync__";
+const ERROR_NOTIFY_THROTTLE_MS = 30_000;
+
+// ── Recently-synced ring buffer (max 10 items) ───────────────────────────────
+interface RecentFile { name: string; direction: "up" | "down" }
+const _recentlySynced: RecentFile[] = [];
+let _trayUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+
+function addRecentlySynced(absPath: string, direction: "up" | "down"): void {
+  const name = absPath.split("/").pop() ?? absPath;
+  _recentlySynced.unshift({ name, direction });
+  if (_recentlySynced.length > 10) _recentlySynced.pop();
+}
+
+function scheduleTrayUpdate(): void {
+  if (_trayUpdateTimer) clearTimeout(_trayUpdateTimer);
+  _trayUpdateTimer = setTimeout(() => {
+    _trayUpdateTimer = null;
+    const activeItems = _status.active.filter((x) => x !== FULL_SYNC_LABEL);
+    invoke("update_tray_status", {
+      syncing: activeItems.length > 0,
+      activeCount: activeItems.length,
+      recentFiles: _recentlySynced.slice(0, 8),
+      errorCount: _status.errors.length,
+    }).catch(() => {});
+  }, 400);
+}
 
 export function getSyncStatus(): SyncStatus {
   return { ..._status, active: [..._status.active], errors: [..._status.errors] };
@@ -85,6 +122,7 @@ export function setSyncStatusCallback(cb: (s: SyncStatus) => void): void {
 
 function notifyStatus(): void {
   _statusCallback?.(getSyncStatus());
+  scheduleTrayUpdate();
 }
 
 function markActive(label: string): void {
@@ -103,6 +141,15 @@ function recordError(path: string, error: string): void {
   _status.errors.push({ path, error });
   if (_status.errors.length > 20) _status.errors.shift();
   notifyStatus();
+
+  const now = Date.now();
+  if (now - _lastErrorNotificationMs >= ERROR_NOTIFY_THROTTLE_MS) {
+    _lastErrorNotificationMs = now;
+    invoke("show_notification", {
+      title: "Proton Drive Sync — feil",
+      body: `${path.split("/").pop() ?? path}: ${error}`,
+    }).catch(() => {});
+  }
 }
 
 // ── Anti-loop helpers ────────────────────────────────────────────────────────
@@ -199,13 +246,56 @@ function findWatchedFolderByLocalPath(absPath: string) {
   return findWatchedFolderByPath(absPath, watchedFolderUids);
 }
 
+/** Exact-match reverse lookup: returns the Drive UID whose localDir === absPath. */
+function findWatchedDirUidByLocalPath(absPath: string): string | undefined {
+  for (const [uid, entry] of watchedFolderUids) {
+    if (entry.localDir === absPath) return uid;
+  }
+  return undefined;
+}
+
+// ── Full reconciliation ───────────────────────────────────────────────────────
+
+async function cleanStaleDbEntries(): Promise<void> {
+  const allFiles = await invoke<FileState[]>("get_all_file_states");
+  for (const f of allFiles) {
+    const stat = await statFile(f.localPath);
+    if (!stat) {
+      console.log("[sync] removing stale DB entry:", f.localPath);
+      await invoke("delete_file_state", { remoteId: f.remoteId }).catch(console.error);
+    }
+  }
+}
+
+/**
+ * Runs a full bidirectional reconciliation: cleans stale DB entries, then
+ * re-scans both the remote Drive folders and the local filesystem. Safe to
+ * call from a button or a periodic timer — concurrent calls are no-ops.
+ */
+export async function triggerFullSync(): Promise<void> {
+  if (_fullSyncInProgress || watchedFolderUids.size === 0) return;
+  _fullSyncInProgress = true;
+  markActive(FULL_SYNC_LABEL);
+  console.log("[sync] Starting full reconciliation…");
+  try {
+    await cleanStaleDbEntries();
+    await initialSyncFolder();
+    await initialSyncLocalFolder();
+    console.log("[sync] Full reconciliation complete");
+  } catch (err) {
+    console.error("[sync] Full reconciliation failed:", err);
+    recordError("(full sync)", String(err));
+  } finally {
+    _fullSyncInProgress = false;
+    markInactive(FULL_SYNC_LABEL);
+  }
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 export async function startSync(): Promise<() => void> {
   console.log("[sync] Loading sync config from DB…");
   const { localRoot, selectedFolders, treeEventScopeId } = await loadSyncConfig();
-  _localRoot = localRoot;
-
   console.log(
     "[sync] Building watched folder map,",
     selectedFolders.length,
@@ -213,6 +303,11 @@ export async function startSync(): Promise<() => void> {
   );
   await buildWatchedFolderMap(selectedFolders, localRoot);
   console.log("[sync] Watching", watchedFolderUids.size, "Drive folder(s)");
+
+  // Ensure all Drive-mapped directories exist locally (covers dirs created while offline)
+  for (const [, entry] of watchedFolderUids) {
+    await invoke("ensure_local_dir", { absPath: entry.localDir }).catch(console.error);
+  }
 
   await initialSyncFolder();
   await initialSyncLocalFolder();
@@ -238,11 +333,15 @@ export async function startSync(): Promise<() => void> {
 
   console.log("[sync] Sync engine started");
 
+  const periodicInterval = setInterval(() => {
+    triggerFullSync().catch(console.error);
+  }, 5 * 60 * 1000);
+
   return () => {
     unlisten();
     subscription.dispose();
+    clearInterval(periodicInterval);
     watchedFolderUids.clear();
-    _localRoot = null;
     console.log("[sync] Sync engine stopped");
   };
 }
@@ -277,10 +376,18 @@ async function initialSyncFolder(): Promise<void> {
 async function initialSyncLocalFolder(): Promise<void> {
   for (const [, entry] of watchedFolderUids) {
     console.log("[sync] Scanning local folder:", entry.localDir);
+    await invoke("ensure_local_dir", { absPath: entry.localDir }).catch(console.error);
     try {
-      const files = await invoke<string[]>("list_local_dir", { absPath: entry.localDir });
-      for (const absPath of files) {
-        await handleLocalUpsert(absPath, false);
+      if (entry.selectedRoot.mode === "recursive") {
+        const files = await invoke<LocalFileEntry[]>("list_dir_recursive", { absPath: entry.localDir });
+        for (const f of files) {
+          await handleLocalUpsert(f.absPath, false);
+        }
+      } else {
+        const files = await invoke<string[]>("list_local_dir", { absPath: entry.localDir });
+        for (const absPath of files) {
+          await handleLocalUpsert(absPath, false);
+        }
       }
     } catch (err) {
       console.error("[sync] Local folder scan failed for", entry.localDir, err);
@@ -299,11 +406,99 @@ async function handleLocalChange(event: WatchEvent): Promise<void> {
   }
 
   if (kind === "delete") {
-    console.log("[sync] skipping local delete (MVP safety):", absPath);
+    await handleLocalDelete(absPath);
+    return;
+  }
+
+  // Check if the path is a directory — dirs need different handling
+  const stat = await statFile(absPath);
+  if (stat?.isDir) {
+    if (kind === "create") await handleLocalDirCreate(absPath);
+    // Modify on a dir fires when its contents change — handled by the file events
     return;
   }
 
   await handleLocalUpsert(absPath, true);
+}
+
+async function handleLocalDelete(absPath: string): Promise<void> {
+  // Check if the deleted path is a watched directory.
+  const dirUid = findWatchedDirUidByLocalPath(absPath);
+  if (dirUid) {
+    await handleLocalDirDeleteToRemote(dirUid, absPath);
+    return;
+  }
+
+  const existing = await invoke<FileState | null>("get_file_state_by_local_path", {
+    localPath: absPath,
+  });
+  if (!existing) {
+    console.log("[sync] local delete: no DB entry for", absPath, "— skipping");
+    return;
+  }
+  const label = absPath;
+  markActive(label);
+  try {
+    await trashNode(existing.remoteId);
+    await invoke("delete_file_state", { remoteId: existing.remoteId });
+    console.log("[sync] trashed remote node for deleted local file:", absPath);
+  } catch (err) {
+    console.error("[sync] Failed to trash remote node for", absPath, err);
+    recordError(absPath, String(err));
+  } finally {
+    markInactive(label);
+  }
+}
+
+async function handleLocalDirDeleteToRemote(folderUid: string, localDir: string): Promise<void> {
+  markActive(localDir);
+  try {
+    await trashNode(folderUid);
+    // Prune watchedFolderUids for this dir and all its subdirs.
+    for (const [uid, entry] of watchedFolderUids) {
+      if (entry.localDir === localDir || entry.localDir.startsWith(localDir + "/")) {
+        watchedFolderUids.delete(uid);
+      }
+    }
+    watchedFolderUids.delete(folderUid);
+    // Clean up any remaining DB rows under this tree (files may already be gone).
+    const allFiles = await invoke<FileState[]>("get_all_file_states");
+    for (const f of allFiles) {
+      if (f.localPath === localDir || f.localPath.startsWith(localDir + "/")) {
+        await invoke("delete_file_state", { remoteId: f.remoteId }).catch(console.error);
+      }
+    }
+    console.log("[sync] trashed remote dir for deleted local dir:", localDir, "(uid:", folderUid, ")");
+  } catch (err) {
+    console.error("[sync] failed to trash remote dir:", localDir, err);
+    recordError(localDir, String(err));
+  } finally {
+    markInactive(localDir);
+  }
+}
+
+async function handleLocalDirCreate(absPath: string): Promise<void> {
+  const match = findWatchedFolderByLocalPath(absPath);
+  if (!match) {
+    console.log("[sync] dir not in watched folder, skipping:", absPath);
+    return;
+  }
+  const dirname = absPath.split("/").pop() ?? absPath;
+  markActive(absPath);
+  try {
+    const result = await findOrCreateFolder(match.uid, dirname);
+    if (!result.ok) throw new Error(String(result.error));
+    const folderUid = result.value.uid;
+    if (!watchedFolderUids.has(folderUid)) {
+      watchedFolderUids.set(folderUid, { localDir: absPath, selectedRoot: match.entry.selectedRoot });
+    }
+    console.log("[sync] created remote dir:", absPath, "→", folderUid);
+  } catch (err) {
+    console.error("[sync] failed to create remote dir:", absPath, err);
+    recordError(absPath, String(err));
+  } finally {
+    markInactive(absPath);
+  }
 }
 
 async function handleLocalUpsert(absPath: string, checkStability: boolean): Promise<void> {
@@ -390,6 +585,8 @@ async function handleLocalUpsert(absPath: string, checkStability: boolean): Prom
       syncState: "synced",
     });
 
+    addRecentlySynced(absPath, "up");
+
     invoke("show_notification", {
       title: "Proton Drive Sync",
       body: `${existing ? "Oppdatert" : "Lastet opp"}: ${filename}`,
@@ -459,8 +656,18 @@ async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
       return;
     }
 
+    if (node.type === NodeType.Folder) {
+      const localDir = `${watchedEntry.localDir}/${node.name}`;
+      await invoke("ensure_local_dir", { absPath: localDir }).catch(console.error);
+      if (!watchedFolderUids.has(nodeUid)) {
+        watchedFolderUids.set(nodeUid, { localDir, selectedRoot: watchedEntry.selectedRoot });
+      }
+      console.log("[sync] created local dir:", localDir, "(remote:", nodeUid, ")");
+      return;
+    }
+
     if (node.type !== NodeType.File) {
-      console.log("[sync] skipping non-file node:", nodeUid, node.type);
+      console.log("[sync] skipping unsupported node type:", nodeUid, node.type);
       return;
     }
 
@@ -498,10 +705,7 @@ async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
 
       if (isRename) {
         suppressPath(existing.localPath);
-        await invoke("trash_local_file", {
-          absPath: existing.localPath,
-          syncRoot: _localRoot ?? "",
-        });
+        await invoke("delete_local_file", { absPath: existing.localPath });
       }
     }
 
@@ -528,6 +732,7 @@ async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
 
     suppressPath(expectedPath);
     await invoke("write_local_file", { absPath: expectedPath, contentB64: b64 });
+    addRecentlySynced(expectedPath, "down");
 
     const revision = node.activeRevision;
     await invoke("upsert_file_state", {
@@ -554,25 +759,60 @@ async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
 
 async function handleRemoteDelete(nodeUid: string): Promise<void> {
   try {
+    // 1. Known file in DB
     const fileState = await invoke<FileState | null>("get_file_state_by_remote_id", {
       remoteId: nodeUid,
     });
-
-    if (!fileState) {
-      console.log("[sync] remote delete for unknown node (not tracked):", nodeUid);
+    if (fileState) {
+      suppressPath(fileState.localPath);
+      await invoke("delete_local_file", { absPath: fileState.localPath });
+      await invoke("set_file_sync_state", { remoteId: nodeUid, syncState: "deleted" });
+      console.log("[sync] deleted local file:", fileState.localPath, "(remote:", nodeUid, ")");
       return;
     }
 
-    suppressPath(fileState.localPath);
-    await invoke("trash_local_file", {
-      absPath: fileState.localPath,
-      syncRoot: _localRoot ?? "",
-    });
-    await invoke("set_file_sync_state", { remoteId: nodeUid, syncState: "deleted" });
+    // 2. Known directory (in watched folder map from startup expansion)
+    const watchedEntry = watchedFolderUids.get(nodeUid);
+    if (watchedEntry) {
+      await handleRemoteDirDelete(nodeUid, watchedEntry.localDir);
+      return;
+    }
 
-    console.log("[sync] trashed local file:", fileState.localPath, "(remote:", nodeUid, ")");
+    // 3. Unknown node — resolve via SDK (covers dirs created after startup)
+    const nodeResult = await getNode(nodeUid).catch(() => null);
+    if (nodeResult?.ok) {
+      const node = nodeResult.value;
+      const parentEntry = node.parentUid ? watchedFolderUids.get(node.parentUid) : undefined;
+      if (parentEntry && node.type === NodeType.Folder) {
+        const localDir = `${parentEntry.localDir}/${node.name}`;
+        await handleRemoteDirDelete(nodeUid, localDir);
+        return;
+      }
+    }
+
+    console.log("[sync] remote delete for unknown node (not tracked):", nodeUid);
   } catch (err) {
     console.error("[sync] remote delete failed for", nodeUid, err);
     recordError(nodeUid, String(err));
   }
+}
+
+async function handleRemoteDirDelete(folderUid: string, localDir: string): Promise<void> {
+  // Clean up all DB rows under this directory tree
+  const allFiles = await invoke<FileState[]>("get_all_file_states");
+  for (const f of allFiles) {
+    if (f.localPath === localDir || f.localPath.startsWith(localDir + "/")) {
+      await invoke("delete_file_state", { remoteId: f.remoteId }).catch(console.error);
+    }
+  }
+  // Remove this folder and all its watched subdirs from the in-memory map
+  for (const [uid, entry] of watchedFolderUids) {
+    if (entry.localDir === localDir || entry.localDir.startsWith(localDir + "/")) {
+      watchedFolderUids.delete(uid);
+    }
+  }
+  watchedFolderUids.delete(folderUid);
+  suppressPath(localDir);
+  await invoke("delete_local_dir", { absPath: localDir });
+  console.log("[sync] deleted local directory:", localDir, "(remote:", folderUid, ")");
 }

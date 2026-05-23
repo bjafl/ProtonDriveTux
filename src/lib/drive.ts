@@ -233,6 +233,12 @@ export async function getFileRevisionUploader(
   return getDriveClient().getFileRevisionUploader(nodeUid, metadata, signal);
 }
 
+export async function trashNode(nodeUid: NodeOrUid): Promise<void> {
+  for await (const result of getDriveClient().trashNodes([nodeUid])) {
+    if (!result.ok) throw new Error("Trash failed: " + String(result.error));
+  }
+}
+
 export async function createFolder(
   parentNodeUid: NodeOrUid,
   name: string,

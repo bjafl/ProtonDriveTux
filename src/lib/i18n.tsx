@@ -1,6 +1,7 @@
 import { createContext, useContext, useState } from "react";
 import { T } from "./translations";
-export type { Translations, Lang } from "./translations";
+import type { Lang, Translations } from "./translations";
+export type { Translations, Lang };
 
 interface LangContextValue {
   lang: Lang;

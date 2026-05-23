@@ -169,6 +169,26 @@ export function Onboarding({ onComplete }: OnboardingProps) {
   }
 
   if (step === "folderSelect") {
+    // Derive current root mode from selectedFolders.
+    const rootEntry = driveRootUid
+      ? selectedFolders.find((f) => f.uid === driveRootUid)
+      : undefined;
+    const rootMode: "none" | "files" | "recursive" = rootEntry
+      ? rootEntry.mode
+      : "none";
+
+    function setRootMode(mode: "none" | "files" | "recursive") {
+      if (!driveRootUid) return;
+      if (mode === "none") {
+        setSelectedFolders((prev) => prev.filter((f) => f.uid !== driveRootUid));
+      } else {
+        setSelectedFolders((prev) => {
+          const without = prev.filter((f) => f.uid !== driveRootUid);
+          return [{ uid: driveRootUid!, name: "My Files", drivePath: "", mode }, ...without];
+        });
+      }
+    }
+
     return (
       <div className="login-wrap">
         <div className="login-card onboarding-card onboarding-card--wide">
@@ -176,13 +196,35 @@ export function Onboarding({ onComplete }: OnboardingProps) {
           <p className="hint">{t.onboardingFolderSelectHint}</p>
 
           {driveRootUid ? (
-            <div className="folder-tree-wrap">
-              <FolderTree
-                driveRootUid={driveRootUid}
-                value={selectedFolders}
-                onChange={setSelectedFolders}
-              />
-            </div>
+            <>
+              <div className="root-mode-row">
+                <span className="root-mode-label">{t.onboardingRootLabel}</span>
+                <div className="root-mode-btns">
+                  {(
+                    [
+                      ["none", t.onboardingRootNone],
+                      ["files", t.onboardingRootFiles],
+                      ["recursive", t.onboardingRootAll],
+                    ] as const
+                  ).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      className={`root-mode-btn${rootMode === mode ? " root-mode-btn--active" : ""}`}
+                      onClick={() => setRootMode(mode)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="folder-tree-wrap">
+                <FolderTree
+                  driveRootUid={driveRootUid}
+                  value={selectedFolders}
+                  onChange={setSelectedFolders}
+                />
+              </div>
+            </>
           ) : (
             <p className="no-events">{t.loading}</p>
           )}

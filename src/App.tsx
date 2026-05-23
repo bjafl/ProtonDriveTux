@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { LoginForm } from "./components/LoginForm";
 import { Onboarding, isOnboardingNeeded } from "./components/Onboarding";
 import { initDriveClient, deriveKeyPassword, refreshTokens, releaseDriveClient, setSessionExpiredCallback } from "./lib/drive";
-import { startSync, setSyncStatusCallback } from "./lib/sync";
+import { startSync, setSyncStatusCallback, triggerFullSync } from "./lib/sync";
 import { defaultSyncPath } from "./lib/paths";
 import type { SyncStatus } from "./lib/sync";
 import { useLang } from "./lib/i18n";
@@ -167,6 +167,13 @@ function syncStateBadge(state: string): { label: string; color: string } {
   }
 }
 
+interface SelectedFolderRecord {
+  uid: string;
+  name: string;
+  drivePath: string;
+  mode: "files" | "recursive";
+}
+
 function MainView({
   onSessionExpired,
   onOpenOnboarding,
@@ -175,11 +182,13 @@ function MainView({
   onOpenOnboarding: () => void;
 }) {
   const [syncPath, setSyncPath] = useState<string>("");
+  const [driveFolders, setDriveFolders] = useState<string[]>([]);
   const [localEvents, setLocalEvents] = useState<LocalEvent[]>([]);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({ active: [], errors: [] });
   const [fileStates, setFileStates] = useState<FileState[]>([]);
   const [autostartEnabled, setAutostartEnabled] = useState<boolean>(false);
   const [autostartLoading, setAutostartLoading] = useState(false);
+  const [syncingFull, setSyncingFull] = useState(false);
   const stopSyncRef = useRef<(() => void) | null>(null);
   const { t, toggleLang } = useLang();
   const { theme, toggleTheme } = useTheme();
@@ -214,8 +223,18 @@ function MainView({
     setSessionExpiredCallback(onSessionExpired);
 
     async function init() {
-      const localRoot = await invoke<string | null>("get_local_root");
+      const [localRoot, selectedFoldersJson] = await Promise.all([
+        invoke<string | null>("get_local_root"),
+        invoke<string | null>("get_db_sync_config", { key: "selected_folders" }),
+      ]);
       if (cancelled) return;
+
+      if (selectedFoldersJson) {
+        try {
+          const folders = JSON.parse(selectedFoldersJson) as SelectedFolderRecord[];
+          setDriveFolders(folders.map((f) => f.name));
+        } catch { /* ignore malformed JSON */ }
+      }
 
       // No root configured yet — onboarding will set one.
       if (!localRoot) {
@@ -274,6 +293,15 @@ function MainView({
     window.location.reload();
   };
 
+  const handleFullSync = async () => {
+    setSyncingFull(true);
+    try {
+      await triggerFullSync();
+    } finally {
+      setSyncingFull(false);
+    }
+  };
+
   return (
     <main className="container">
       <div className="topbar">
@@ -295,12 +323,22 @@ function MainView({
               ? t.syncingItems(syncStatus.active.length)
               : t.syncIdle}
           </span>
+          <button
+            className="back-btn"
+            style={{ marginLeft: "auto", fontSize: "0.8rem" }}
+            onClick={handleFullSync}
+            disabled={syncingFull || syncStatus.active.length > 0}
+            title={t.syncNow}
+          >
+            {syncingFull ? "⟳" : "↺"} {t.syncNow}
+          </button>
         </div>
         <div className="sync-path">
           {t.localFolder} <code>{syncPath || t.loading}</code>
         </div>
         <div className="sync-path">
-          {t.driveFolder} <code>My files</code>
+          {t.driveFolder}{" "}
+          <code>{driveFolders.length > 0 ? driveFolders.join(", ") : t.loading}</code>
         </div>
         {syncStatus.active.length > 0 && (
           <ul style={{ margin: "0.4rem 0 0", padding: "0 0 0 1.2rem", fontSize: "0.82rem" }}>

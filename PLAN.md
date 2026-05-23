@@ -22,23 +22,18 @@ rename handling, write-stability check, trash-based deletes, SQLite state.
 
 ## Bugs / Gaps — must fix for correct sync
 
-### G1. `initialSyncLocalFolder` only scans top-level files
+### G1. `initialSyncLocalFolder` only scans top-level files ✅ Fixed
 
 **Where:** `src/lib/sync.ts` → `initialSyncLocalFolder`  
-**Problem:** Calls `list_local_dir` (flat) for every watched folder entry.
-For `recursive` folders this means subdirectory files are not uploaded on startup.
-The inotify watcher covers them once the app is running, but a cold start misses
-everything in subdirectories.  
-**Fix:** For each entry where `selectedRoot.mode === "recursive"`, call
-`list_dir_recursive` instead of `list_local_dir`. The returned `LocalFileEntry[]`
-already has `rel_path` and `abs_path` — use `abs_path` as the argument to
-`handleLocalUpsert`.
+**Fix applied:** For entries with `selectedRoot.mode === "recursive"`, now calls
+`list_dir_recursive` (returns `LocalFileEntry[]` with `abs_path`) instead of flat
+`list_local_dir`. Files mode still uses flat listing.
 
 ---
 
 ### G2. Large file memory: full base64 round-trip
 
-**Where:** `src/lib/sync.ts` → `handleLocalUpsert` (lines ~337–349),
+**Where:** `src/lib/sync.ts` → `handleLocalUpsert`,
 `src-tauri/src/commands.rs` → `read_local_file` / `write_local_file`  
 **Problem:** `read_local_file` reads the whole file into RAM as bytes, base64-encodes
 it, returns a string across IPC; JS decodes with `atob()` into a second buffer.
@@ -53,28 +48,21 @@ buffering.
 
 ---
 
-### G3. Watcher has no stop channel
+### G3. Watcher has no stop channel ✅ Fixed
 
-**Where:** `src-tauri/src/watcher.rs`, `src-tauri/src/commands.rs` → `start_file_watcher`  
-**Problem:** `start_file_watcher` spawns a thread with a `RecommendedWatcher` and
-returns. There is no way to stop it. Calling `start_file_watcher` a second time
-(e.g. after the user changes the sync root in settings) starts a second watcher;
-both run indefinitely, emitting duplicate events.  
-**Fix:** Pass an `Arc<AtomicBool>` stop flag into the watcher thread. Expose a
-`stop_file_watcher` Tauri command that sets the flag. Store the current stop flag
-in `AppState` so re-triggering first stops the old watcher.
+**Where:** `src-tauri/src/watcher.rs`, `src-tauri/src/commands.rs`  
+**Fix applied:** `start_watcher` now returns `Arc<AtomicBool>`. `AppState` stores
+the current stop flag. `start_file_watcher` stops the old watcher before starting
+a new one. New `stop_file_watcher` command exposed.
 
 ---
 
-### G4. Deleting a local file does not delete it from Drive
+### G4. Deleting a local file does not delete it from Drive ✅ Fixed
 
-**Where:** `src/lib/sync.ts` → `handleLocalChange`  
-**Problem:** When `kind === "delete"` we log "skipping local delete (MVP safety)"
-and return. The file stays in Drive forever.  
-**Fix:** Look up the `remote_id` from the DB by `local_path`. Call the SDK delete
-API (check `drive.ts` — likely need a `deleteNode(uid)` export). On success, remove
-the DB row. Keep the "MVP safety" guard as a config flag initially; default it off
-so deletes are synced.
+**Where:** `src/lib/sync.ts` → `handleLocalChange` / `handleLocalDelete`  
+**Fix applied:** `handleLocalDelete` looks up `remote_id` by `local_path` from DB,
+calls `trashNode(remoteId)` (SDK `trashNodes` wrapper in `drive.ts`), then removes
+the DB row via new `delete_file_state` Rust command.
 
 ---
 
@@ -91,10 +79,9 @@ Expose `pause_sync` / `resume_sync` Tauri commands. Show pause/resume button in 
 
 ### Phase 4 — remaining
 
-**4.1 MainView: show selected Drive folders, not "My Files"**  
-`src/App.tsx` / `src/components/MainView` currently shows a hardcoded "Drive-mappe"
-label. Replace with the list of selected folder names from `selectedFolders` state
-(read from DB via `get_db_sync_config("selected_folders")`).
+**4.1 MainView: show selected Drive folders, not "My Files"** ✅ Fixed  
+`src/App.tsx` now reads `selected_folders` from DB on init and displays the folder
+names joined by ", " in the sync-path row.
 
 **4.2 Watcher handoff when sync root changes**  
 "Change sync settings" re-runs onboarding. When the user saves a new local root,
@@ -106,10 +93,9 @@ Run `cargo tauri build` end-to-end on a clean Ubuntu 22.04 machine or container.
 Document the exact `apt` packages needed: `libwebkit2gtk-4.1-dev`,
 `libayatana-appindicator3-dev`, `libssl-dev`. Produce a working `.AppImage`.
 
-**4.4 Desktop notification on sync error**  
-`show_notification` command exists. Wire it: when `sync_state = error` is set for
-a file, emit a notification with the file name and error. Rate-limit: max 1
-notification per 30 s to avoid spam.
+**4.4 Desktop notification on sync error** ✅ Fixed  
+`recordError` in `sync.ts` now calls `show_notification` on each error, throttled
+to max 1 notification per 30 s.
 
 ---
 

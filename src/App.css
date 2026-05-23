@@ -415,6 +415,47 @@ code {
   margin-top: 1.25rem;
 }
 
+/* ── Onboarding root mode selector ── */
+.root-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.5rem 0 0.25rem;
+  flex-wrap: wrap;
+}
+
+.root-mode-label {
+  font-size: 0.85rem;
+  color: var(--text-secondary, #888);
+  white-space: nowrap;
+}
+
+.root-mode-btns {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.root-mode-btn {
+  padding: 0.2rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.root-mode-btn:hover {
+  background: var(--hover-bg, rgba(128, 128, 128, 0.1));
+}
+
+.root-mode-btn--active {
+  background: var(--accent, #6d4aff);
+  color: #fff;
+  border-color: var(--accent, #6d4aff);
+}
+
 /* ── Folder tree ── */
 .folder-tree-wrap {
   max-height: 320px;
