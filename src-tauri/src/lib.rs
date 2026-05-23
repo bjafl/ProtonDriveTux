@@ -6,15 +6,15 @@ mod watcher;
 
 use commands::{
     AppState, clear_all_file_states, close_captcha_window, delete_file_state, delete_local_dir,
-    delete_local_file, disable_autostart, enable_autostart, ensure_local_dir, get_all_file_states,
-    get_auth_status, get_autostart_enabled, get_db_sync_config, get_file_state_by_local_path,
-    get_file_state_by_remote_id, get_home_dir, get_key_password, get_local_root,
-    get_session_tokens, list_dir_recursive, list_local_dir, logout, open_captcha_window,
-    read_local_file, rename_local_file, restore_session_from_keyring, set_db_sync_config,
-    set_file_sync_state, set_local_root, show_notification, start_file_watcher, stat_local_file,
-    stop_file_watcher, store_key_password, store_tokens, trash_local_file, truncate_local_file,
-    update_tray_status, upsert_file_state, validate_local_root, write_local_file,
-    write_local_file_chunk,
+    delete_local_file, disable_autostart, emit_pause_toggle, enable_autostart, ensure_local_dir,
+    get_all_file_states, get_auth_status, get_autostart_enabled, get_db_sync_config,
+    get_file_state_by_local_path, get_file_state_by_remote_id, get_home_dir, get_key_password,
+    get_local_root, get_session_tokens, get_tray_status, list_dir_recursive, list_local_dir,
+    logout, open_captcha_window, read_local_file, rename_local_file, restore_session_from_keyring,
+    set_db_sync_config, set_file_sync_state, set_local_root, show_main_window, show_notification,
+    start_file_watcher, stat_local_file, stop_file_watcher, store_key_password, store_tokens,
+    trash_local_file, truncate_local_file, update_tray_status, upsert_file_state,
+    validate_local_root, write_local_file, write_local_file_chunk,
 };
 use db::Db;
 use tauri::{
@@ -145,6 +145,9 @@ pub fn run() {
             truncate_local_file,
             write_local_file_chunk,
             update_tray_status,
+            get_tray_status,
+            show_main_window,
+            emit_pause_toggle,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -164,7 +167,14 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     TrayIconBuilder::with_id("main")
         .icon(icon)
         .menu(&menu)
+        .menu_on_left_click(false)
         .tooltip("Proton Drive Sync")
+        .on_tray_icon_event(|tray, event| {
+            use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, position, .. } = event {
+                toggle_tray_popup(tray.app_handle(), position);
+            }
+        })
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {
                 if let Some(window) = app.get_webview_window("main") {
@@ -173,7 +183,6 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                 }
             }
             "pause" | "resume" => {
-                // Tell the frontend to toggle pause state; it owns the sync engine.
                 let _ = app.emit("sync://pause-toggle", ());
             }
             "quit" => app.exit(0),
@@ -182,6 +191,57 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .build(app)?;
 
     Ok(())
+}
+
+fn toggle_tray_popup(app: &tauri::AppHandle, click_pos: tauri::PhysicalPosition<f64>) {
+    let Some(popup) = app.get_webview_window("tray-popup") else { return };
+    if popup.is_visible().unwrap_or(false) {
+        let _ = popup.hide();
+    } else {
+        position_and_show_popup(&popup, click_pos);
+    }
+}
+
+fn position_and_show_popup(popup: &tauri::WebviewWindow, click_pos: tauri::PhysicalPosition<f64>) {
+    const POPUP_W: f64 = 300.0;
+    const POPUP_H: f64 = 420.0;
+    const GAP: f64 = 6.0;
+
+    let position = if let Ok(monitors) = popup.available_monitors() {
+        // Find the monitor containing the click.
+        let monitor = monitors.into_iter().find(|m| {
+            let p = m.position();
+            let s = m.size();
+            click_pos.x >= p.x as f64
+                && click_pos.x < p.x as f64 + s.width as f64
+                && click_pos.y >= p.y as f64
+                && click_pos.y < p.y as f64 + s.height as f64
+        });
+        if let Some(m) = monitor {
+            let mx = m.position().x as f64;
+            let my = m.position().y as f64;
+            let mw = m.size().width as f64;
+            let mh = m.size().height as f64;
+
+            // Horizontal: centred on click, clamped to screen edges.
+            let x = (click_pos.x - POPUP_W / 2.0).max(mx).min(mx + mw - POPUP_W);
+            // Vertical: above icon if panel is at bottom, below if at top.
+            let y = if click_pos.y > my + mh / 2.0 {
+                click_pos.y - POPUP_H - GAP
+            } else {
+                click_pos.y + GAP
+            };
+            tauri::PhysicalPosition { x: x as i32, y: y as i32 }
+        } else {
+            tauri::PhysicalPosition { x: click_pos.x as i32, y: click_pos.y as i32 }
+        }
+    } else {
+        tauri::PhysicalPosition { x: click_pos.x as i32, y: click_pos.y as i32 }
+    };
+
+    let _ = popup.set_position(position);
+    let _ = popup.show();
+    let _ = popup.set_focus();
 }
 
 fn setup_window_close_handler(app: &tauri::App) {

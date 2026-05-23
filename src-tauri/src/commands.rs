@@ -11,6 +11,7 @@ use crate::keyring;
 pub struct AppState {
     pub session: Mutex<Option<AuthSession>>,
     pub watcher_stop: Mutex<Option<Arc<AtomicBool>>>,
+    pub last_tray_status: Mutex<Option<TrayStatusPayload>>,
 }
 
 impl AppState {
@@ -18,6 +19,7 @@ impl AppState {
         Self {
             session: Mutex::new(None),
             watcher_stop: Mutex::new(None),
+            last_tray_status: Mutex::new(None),
         }
     }
 }
@@ -742,14 +744,14 @@ pub fn disable_autostart() -> Result<(), String> {
 
 // ── Tray status update ────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RecentFile {
     pub name: String,
     pub direction: String, // "up" | "down"
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TrayStatusPayload {
     pub paused: bool,
@@ -762,11 +764,16 @@ pub struct TrayStatusPayload {
 #[tauri::command]
 pub fn update_tray_status(
     app: tauri::AppHandle,
+    state: State<'_, AppState>,
     payload: TrayStatusPayload,
 ) -> Result<(), String> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     #[allow(unused_imports)]
     use tauri::Manager;
+
+    // Persist for the popup window to query on open, and broadcast to all webviews.
+    *state.last_tray_status.lock().unwrap() = Some(payload.clone());
+    let _ = app.emit("tray://status", &payload);
 
     let tray = match app.tray_by_id("main") {
         Some(t) => t,
@@ -851,6 +858,26 @@ pub fn update_tray_status(
     tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+// ── Tray popup helpers ───────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_tray_status(state: State<'_, AppState>) -> Option<TrayStatusPayload> {
+    state.last_tray_status.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn show_main_window(app: tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+#[tauri::command]
+pub fn emit_pause_toggle(app: tauri::AppHandle) {
+    let _ = app.emit("sync://pause-toggle", ());
 }
 
 // ── GLib warning suppressor ──────────────────────────────────────────────────
