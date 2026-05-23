@@ -1,56 +1,58 @@
 # CLAUDE.md — Proton Drive Linux Sync Client
 
-## Prosjektformål
+## Purpose
 
-Uoffisiell, ikke-kommersiell Proton Drive sync-klient for Linux (Ubuntu/GNOME-fokus), bygget med Tauri v2. Målet er en fungerende prototype som synkroniserer en lokal mappe mot Proton Drive med end-to-end-kryptering ivaretatt av Protons egne SDK.
+Unofficial, non-commercial Proton Drive sync client for Linux (Ubuntu/GNOME focus), built with
+Tauri v2. The goal is a working prototype that syncs a local folder against Proton Drive with
+end-to-end encryption handled entirely by Proton's own SDK.
 
-Proton har varslet offisiell Linux-klient, men den er ikke ute ennå (mai 2026). Dette prosjektet fyller gapet og fungerer som læringsprosjekt for Tauri + Linux desktop-integrasjon.
+Proton has announced an official Linux client, but it is not yet available (May 2026). This
+project fills the gap and serves as a learning project for Tauri + Linux desktop integration.
 
 ---
 
-## Repostruktur
+## Repo structure
 
 ```
-protondrive-linux-client/   ← prosjektrot
+proton-drive-linux-sync/    ← project root
 ├── CLAUDE.md
 ├── src-tauri/              ← Rust/Tauri backend
 │   ├── Cargo.toml
 │   ├── tauri.conf.json
 │   └── src/
-│       ├── main.rs         ← Tauri app entry point
-│       ├── auth.rs         ← SRP-autentisering mot Proton API
-│       ├── watcher.rs      ← inotify via notify-crate
-│       ├── sync.rs         ← sync-motor, kø-system
-│       ├── db.rs           ← SQLite state-database
-│       ├── keyring.rs      ← GNOME Keyring via zbus
+│       ├── main.rs         ← Tauri entry point
+│       ├── auth.rs         ← SRP authentication against the Proton API
+│       ├── watcher.rs      ← inotify via the notify crate
+│       ├── db.rs           ← SQLite state database
+│       ├── keyring.rs      ← GNOME Keyring via secret-service crate
 │       └── commands.rs     ← Tauri IPC commands
 ├── src/                    ← React/TypeScript frontend
 │   ├── main.tsx
 │   ├── App.tsx
 │   ├── components/
 │   └── lib/
-│       └── drive.ts        ← Wrapper rundt Proton Drive JS SDK
+│       └── drive.ts        ← Thin wrapper around the Proton Drive JS SDK
 └── vendor/
     └── sdk/                ← Proton Drive SDK (git submodule, read-only)
-        ├── js/             ← TypeScript SDK — primær integrasjon
-        ├── cs/             ← C# SDK (referanse)
-        ├── kt/             ← Kotlin (referanse)
-        └── swift/          ← Swift (referanse)
+        ├── js/             ← TypeScript SDK — primary integration
+        ├── cs/             ← C# SDK (reference only)
+        ├── kt/             ← Kotlin (reference only)
+        └── swift/          ← Swift (reference only)
 ```
 
 ---
 
-## SDK-integrasjon
+## SDK integration
 
-SDKen er inkludert som en **git submodule** under `vendor/sdk/` og skal **ikke** modifiseres.
-Klon med `git clone --recurse-submodules`, eller kjør `git submodule update --init --recursive`
-etter en vanlig clone. Bygg SDKen én gang med `cd vendor/sdk/js/sdk && npm install && npm run build`.
+The SDK is included as a **git submodule** at `vendor/sdk/` and must **not** be modified.
+Clone with `git clone --recurse-submodules`, or run `git submodule update --init --recursive`
+after a plain clone. Build the SDK once with `cd vendor/sdk/js/sdk && npm install && npm run build`.
 
-### JS SDK (primær)
-- Plassering: `vendor/sdk/js/sdk/`
-- Brukes i React/TypeScript-laget (Tauri WebView)
-- Håndterer all Drive-logikk: kryptering, filopplasting/-nedlasting, mappestruktur
-- Referert via `file:./vendor/sdk/js/sdk` i `package.json`
+### JS SDK (primary)
+- Location: `vendor/sdk/js/sdk/`
+- Used in the React/TypeScript layer (Tauri WebView)
+- Handles all Drive logic: encryption, file upload/download, folder structure
+- Referenced via `file:./vendor/sdk/js/sdk` in `package.json`
 
 ```jsonc
 // tsconfig.json paths
@@ -63,164 +65,164 @@ etter en vanlig clone. Bygg SDKen én gang med `cd vendor/sdk/js/sdk && npm inst
 }
 ```
 
-### Prosedyre: oppdater SDK-submodulen
+### Procedure: update the SDK submodule
 
-Kjør denne prosedyren når brukeren ber om å sjekke/oppdatere SDKen.
+Run this procedure when the user asks to check or update the SDK.
 
-#### Steg 1 — finn nye commits
+#### Step 1 — find new commits
 
 ```bash
-# Hent oppdateringer uten å endre noe
+# Fetch without changing anything
 git -C vendor/sdk fetch origin
 
-# Vis commits siden nåværende pin (SHA vises i .gitmodules-commit)
-CURRENT=$(git submodule status vendor/sdk | awk '{print $1}' | tr -d +-) 
+# List commits since the current pin
+CURRENT=$(git submodule status vendor/sdk | awk '{print $1}' | tr -d +-)
 git -C vendor/sdk log "$CURRENT..origin/HEAD" --oneline
 ```
 
-Hvis ingen nye commits: meld fra og stopp.
+If there are no new commits: report and stop.
 
-#### Steg 2 — analyser endringene
+#### Step 2 — analyse the changes
 
-For hver commit siden pinnen:
+For each commit since the pin:
 
 ```bash
-# Se hvilke filer som er endret
+# See which files changed
 git -C vendor/sdk show <sha> --name-only
 
-# Se diff for JS SDK-koden (eneste vi bruker)
+# See the diff for JS SDK code (the only part we use)
 git -C vendor/sdk show <sha> -- "js/sdk/src/"
 ```
 
-**Vurder risiko per commit:**
+**Assess risk per commit:**
 
-| Hva er endret | Risiko |
-|---------------|--------|
-| Kun `cs/`, `kt/`, `swift/`, `CHANGELOG.md` | Ingen — vi bruker bare JS |
-| `js/sdk/src/internal/` | Lav — intern refactor, sjekk om eksportert API er intakt |
-| `js/sdk/src/index.ts` eller re-eksporter | Høy — endring i public API |
-| Eksisterende eksportert funksjon/type fjernet eller signatur endret | **Breaking** |
-| Ny valgfri parameter på funksjon vi kaller | Ikke-breaking |
-| Obligatorisk parameter lagt til | **Breaking** |
-| Felt gjort `optional` som var påkrevd (eller omvendt) | Potensielt breaking |
+| What changed | Risk |
+|--------------|------|
+| Only `cs/`, `kt/`, `swift/`, `CHANGELOG.md` | None — we only use JS |
+| `js/sdk/src/internal/` | Low — internal refactor; verify exported API is intact |
+| `js/sdk/src/index.ts` or re-exports | High — public API change |
+| Existing exported function/type removed or signature changed | **Breaking** |
+| New optional parameter on a function we call | Non-breaking |
+| New required parameter added | **Breaking** |
+| Field changed from required to optional or vice versa | Potentially breaking |
 
-**Våre SDK-inngangspunkter** (det eneste som er relevant å sjekke):
+**Our SDK entry points** (the only things that matter):
 ```
-ProtonDriveClient — konstruktør-options
+ProtonDriveClient — constructor options
 getDriveClient().getNode()
 getDriveClient().listFolderChildren()
 getDriveClient().subscribeToTreeEvents()
 getDriveClient().getFileUploader()          — metadata: { mediaType, expectedSize, modificationTime? }
-getDriveClient().getFileRevisionUploader()  — metadata: samme
+getDriveClient().getFileRevisionUploader()  — metadata: same shape
 getDriveClient().getFileDownloader()
 getDriveClient().trashNodes()
 getDriveClient().createFolder() / findOrCreateFolder()
 ```
-Alle kall er isolert i `src/lib/drive.ts` — kun den filen trenger å endres ved API-brudd.
+All calls are isolated in `src/lib/drive.ts` — only that file needs to change on an API break.
 
-#### Steg 3 — sjekk npm-avhengigheter i SDKen
+#### Step 3 — check npm dependencies in the SDK
 
 ```bash
-# Har package.json endret seg siden pinnen?
+# Did package.json change since the pin?
 git -C vendor/sdk diff "$CURRENT..origin/HEAD" -- js/sdk/package.json
 ```
 
-Merk **dependencies** og **devDependencies** separat:
-- Ny/endret **dependency**: `npm install` er nødvendig etter checkout.
-- Ny/endret **devDependency**: bare relevant for bygging; `npm install` er fortsatt nok.
-- Endring i **build-scriptet** (`scripts.build`): bruk det nye scriptet, ikke hardkodet `tsc`.
+Note **dependencies** and **devDependencies** separately:
+- New/changed **dependency**: `npm install` is required after checkout.
+- New/changed **devDependency**: only relevant for building; `npm install` is still sufficient.
+- Changed **build script** (`scripts.build`): use the new script, do not hardcode `tsc`.
 
-#### Steg 4 — rapporter og spør brukeren
+#### Step 4 — report and ask the user
 
-Presenter et sammendrag:
+Present a summary:
 
 ```
-Fant N nye commits siden <gammel-sha>:
-  - <sha> <tittel>  [ingen JS-endring / lav risiko / BREAKING]
+Found N new commits since <old-sha>:
+  - <sha> <title>  [no JS change / low risk / BREAKING]
   - ...
 
-JS-avhengigheter endret: ja/nei
-Brudd på våre API-kall: ja/nei — [detaljer]
+JS dependencies changed: yes/no
+Break in our API calls: yes/no — [details]
 ```
 
-Spør deretter:
-- Hvis **ingen breaking changes**: «Ser trygt ut. Skal jeg oppdatere submodulen?»
-- Hvis **breaking changes**: beskriv hva som brytes og foreslå konkrete endringer i
-  `src/lib/drive.ts` (og evt. `src/lib/sync.ts`). Spør om brukeren vil gå videre med
-  oppdateringen og fikse koden, eller vente.
-- Hvis usikkert: beskriv usikkerheten og la brukeren bestemme.
+Then ask:
+- If **no breaking changes**: "Looks safe. Shall I update the submodule?"
+- If **breaking changes**: describe what breaks and propose concrete fixes in
+  `src/lib/drive.ts` (and optionally `src/lib/sync.ts`). Ask whether the user wants
+  to proceed with the update and fix the code, or wait.
+- If **uncertain**: describe the uncertainty and let the user decide.
 
-#### Steg 5 — utfør oppdateringen (kun etter brukerens godkjenning)
+#### Step 5 — perform the update (only after user approval)
 
 ```bash
-# 1. Gå til ny commit
+# 1. Move to the new commit
 NEW_SHA=$(git -C vendor/sdk rev-parse origin/HEAD)
 git -C vendor/sdk checkout "$NEW_SHA"
 
-# 2. Installer npm-avhengigheter (alltid trygt, nødvendig hvis deps endret)
+# 2. Install npm dependencies (always safe; required if deps changed)
 cd vendor/sdk/js/sdk
 npm install
 
-# 3. Bygg SDKen — bruk build:ci for ren bygg hvis deps ble endret, ellers build
-npm run build          # eller: npm run build:ci
+# 3. Build the SDK — use build:ci for a clean build if deps changed, otherwise build
+npm run build          # or: npm run build:ci
 cd ../../../..
 
-# 4. Oppdater prosjektets avhengigheter (plukker opp evt. endringer i dist/)
+# 4. Update project dependencies (picks up any changes in dist/)
 pnpm install
 
-# 5. Typesjekk + tester
+# 5. Type-check + tests
 pnpm tsc --noEmit
 pnpm test
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-Hvis typesjekk feiler pga. breaking API-endringer: implementer de avtalte rettelsene
-i `src/lib/drive.ts` (og evt. `src/lib/sync.ts`) og kjør testene på nytt.
+If the type-check fails due to breaking API changes: implement the agreed fixes in
+`src/lib/drive.ts` (and optionally `src/lib/sync.ts`) and re-run the tests.
 
-#### Steg 6 — commit
+#### Step 6 — commit
 
 ```bash
-git add vendor/sdk pnpm-lock.yaml   # legg til src/lib/drive.ts m.fl. hvis endret
-git commit -m "chore(sdk): advance submodule to <ny-sha-kort>
+git add vendor/sdk pnpm-lock.yaml   # also add src/lib/drive.ts etc. if changed
+git commit -m "chore(sdk): advance submodule to <new-short-sha>
 
-<liste over commits siden forrige pin, med risikovurdering>
-<«No changes required» eller beskriv hva som ble fikset>
+<list of commits since previous pin, with risk assessment>
+<'No changes required' or describe what was fixed>
 
 Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 ```
 
-#### Fallback: rulle tilbake
+#### Fallback: roll back
 
-Hvis noe går galt etter oppdatering:
+If something goes wrong after updating:
 ```bash
-git -C vendor/sdk checkout <gammel-sha>
+git -C vendor/sdk checkout <old-sha>
 cd vendor/sdk/js/sdk && npm run build && cd ../../../..
 pnpm install
-git checkout vendor/sdk   # tilbakestill staged endring
+git checkout vendor/sdk   # discard the staged submodule change
 ```
 
 ---
 
-### Viktige SDK-begrensninger
-- SDKen er **ikke produksjonsklar** — breaking changes vil komme (ny crypto-modell)
-- SDKen inkluderer **ikke** autentisering, session management eller adresse-provider — dette implementeres selv
-- Direkte API-kall forbi SDKen er **ikke tillatt** per Protons bruksvilkår
-- Synkronisering skal skje via **Drive events** — ikke polling eller rekursiv traversering
+### Important SDK constraints
+- The SDK is **not production-ready** — breaking changes are coming (new crypto model)
+- The SDK does **not** include authentication, session management, or an address provider — these are implemented here
+- Direct API calls that bypass the SDK are **not permitted** under Proton's terms of use
+- Syncing must go via **Drive events** — not polling or recursive traversal
 
-### Påkrevd HTTP-header
-Alle requests via SDK må sette:
+### Required HTTP header
+All requests via the SDK must set:
 ```
 x-pm-appversion: external-drive-protondrive-linux@{version}-alpha
 ```
 
 ---
 
-## Arkitektur
+## Architecture
 
 ```
 ┌─────────────────────────────────────────┐
 │  React + TypeScript (Tauri WebView)     │
-│  - Login UI, statusvisning, innstillinger│
+│  - Login UI, status view, settings      │
 │  - Proton Drive JS SDK                  │
 │  - VolumeEventChannel (server events)   │
 ├─────────────────────────────────────────┤
@@ -229,66 +231,66 @@ x-pm-appversion: external-drive-protondrive-linux@{version}-alpha
 │  Rust (Tauri backend)                   │
 │  - notify crate → inotify watcher       │
 │  - tokio::sync::mpsc event queue        │
-│  - SQLite state-database (rusqlite)     │
-│  - zbus → GNOME Keyring (credentials)   │
+│  - SQLite state database (rusqlite)     │
+│  - secret-service → GNOME Keyring       │
 │  - notify-rust → desktop notifications  │
 └─────────────────────────────────────────┘
 ```
 
-### Dataflyt — lokal → remote
-1. `notify`-watcher (Rust) detekterer filendring via inotify
-2. Event debounces 300 ms og legges i `mpsc`-kanal
-3. Tauri emitter sender event til WebView: `sync://local-change`
-4. JS SDK krypterer og laster opp filen
-5. SQLite oppdateres med ny `etag` og `sync_state = synced`
+### Data flow — local → remote
+1. `notify` watcher (Rust) detects file change via inotify
+2. Event is debounced 300 ms and placed in an `mpsc` channel
+3. Tauri emits the event to the WebView: `sync://local-change`
+4. `handleLocalUpsert` fetches raw bytes via `pd-file://` scheme
+5. JS SDK encrypts and uploads the file
+6. SQLite updated with new `etag` and `sync_state = synced`
 
-### Dataflyt — remote → lokal
-1. `VolumeEventChannel` (JS SDK) mottar server-side event
-2. Sammenlign mot SQLite-state
-3. Last ned og dekrypter endrede filer
-4. Skriv til lokal sync-mappe
-5. Oppdater SQLite
+### Data flow — remote → local
+1. `VolumeEventChannel` (JS SDK) receives a server-side event
+2. Compare revision ID against SQLite state
+3. Download and decrypt via SDK; stream chunks straight to disk
+4. SQLite updated
 
 ---
 
-## Teknisk stack
+## Tech stack
 
-| Lag | Teknologi | Versjon |
-|-----|-----------|---------|
+| Layer | Technology | Version |
+|-------|-----------|---------|
 | Desktop shell | Tauri | v2 |
 | Backend | Rust + Tokio | stable |
-| Frontend | React + TypeScript | 18 / 5 |
+| Frontend | React + TypeScript | 19 / 5 |
 | Styling | Tailwind CSS + shadcn/ui | v4 / latest |
-| Drive SDK | Proton Drive JS SDK | `../sdk/js` |
-| Filmonitorering | `notify` crate | 6.x |
+| Drive SDK | Proton Drive JS SDK | `vendor/sdk/js/sdk` |
+| File monitoring | `notify` crate | 6.x |
 | Local state | SQLite via `rusqlite` | 0.31.x |
-| Credentials | `zbus` + freedesktop secrets | 4.x |
+| Credentials | `secret-service` crate | 5.x |
 | Notifications | `notify-rust` | 4.x |
-| Pakkeformat | AppImage (v1), Flatpak (v2) | — |
+| Package format | AppImage (v1), Flatpak (v2) | — |
 
 ---
 
-## Autentisering
+## Authentication
 
-Proton bruker **SRP (Secure Remote Password)** — passord sendes aldri i klartekst.
+Proton uses **SRP (Secure Remote Password)** — the password is never sent in plaintext.
 
-### Flyt
+### Flow
 ```
 1. GET  /auth/info?Username={user}   → salt, server_ephemeral, srpSession
-2. Beregn SRP client proof lokalt (bcrypt + SHA512)
+2. Compute SRP client proof locally  (bcrypt + SHA512)
 3. POST /auth                        → access_token, refresh_token, UID
-4. POST /auth/2fa  (hvis aktivert)   → TOTP-kode
-5. Lagre tokens i GNOME Keyring
+4. POST /auth/2fa  (if enabled)      → TOTP code
+5. Store tokens in GNOME Keyring
 ```
 
-### Referanseimplementasjoner
-- `ProtonDriveApps/WebClients` — TypeScript SRP-implementasjon
-- `ProtonDriveApps/sdk-tech-demo` — C# referanse med `ProtonApiSession`
-- Aldri lagre passord — kun session tokens i keyring
+### Reference implementations
+- `ProtonDriveApps/WebClients` — TypeScript SRP implementation
+- `ProtonDriveApps/sdk-tech-demo` — C# reference with `ProtonApiSession`
+- Never store passwords — only session tokens in the keyring
 
 ---
 
-## SQLite state-schema
+## SQLite state schema
 
 ```sql
 CREATE TABLE files (
@@ -303,69 +305,72 @@ CREATE TABLE files (
 CREATE TABLE sync_config (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
-    -- 'local_root', 'volume_id', 'last_event_anchor', etc.
+    -- keys: 'local_root', 'volume_id', 'last_event_anchor', 'selected_folders', etc.
 );
 ```
 
 ---
 
-## Linux-integrasjon
+## Linux integration
 
-### GNOME Keyring (credentials)
-```rust
-// zbus-kall mot org.freedesktop.secrets
-// Bruk 'secret-service' crate som wrapper
-```
+### GNOME Keyring
+Credentials are stored via the `secret-service` crate, which talks to
+`org.freedesktop.secrets` (GNOME Keyring or any compatible provider).
 
 ### Autostart
 ```ini
-# ~/.config/autostart/protondrive-linux.desktop
+# ~/.config/autostart/proton-drive-sync.desktop
 [Desktop Entry]
 Type=Application
-Name=Proton Drive
-Exec=/opt/protondrive-linux/protondrive-linux --minimized
+Name=Proton Drive Sync
+Exec=/path/to/proton-drive-linux-sync --minimized
 Hidden=false
 X-GNOME-Autostart-enabled=true
 ```
 
 ### System tray
-GNOME fjernet native tray-støtte. Krever `gnome-shell-extension-appindicator` eller `ubuntu-appindicator`. Dokumenter som kjent begrensning. Tauri bruker `tray-icon` + `libayatana-appindicator`.
+GNOME removed native tray support. Requires `gnome-shell-extension-appindicator` or
+`ubuntu-appindicator`. Tauri uses `tray-icon` + `libayatana-appindicator3`.
+The one-time deprecation warning from `libayatana-appindicator3` is suppressed via a
+GLib log handler installed before the tray is created (see `suppress_appindicator_warning`
+in `commands.rs`).
 
 ---
 
-## Kjente begrensninger og risikoer
+## Known limitations and risks
 
-- **SDK breaking change er varslet** — Proton vil introdusere ny crypto-modell. Abstraher alle SDK-kall bak `src/lib/drive.ts` slik at oppdatering er isolert.
-- **SRP-implementasjon er kompleks** — følg WebClients-repoet nøye, ikke improviser krypto.
-- **rclone er bevisst ikke brukt** — ustabilt og blokkeres av Proton periodvis.
-- **GNOME tray** krever extension installert — fallback til statusvindu ved manglende support.
-- **Kun personlig, ikke-kommersiell bruk** — Protons SDK-vilkår forbyr kommersiell bruk uten avtale.
-- **Konfliktløsning er ikke implementert i v1** — siste-skriving-vinner ved kollisjon.
+- **SDK breaking change announced** — Proton will introduce a new crypto model. All SDK calls
+  are abstracted behind `src/lib/drive.ts` so the migration surface is minimal.
+- **SRP implementation is complex** — follow the WebClients repo closely; do not improvise crypto.
+- **rclone is intentionally not used** — it is unstable and periodically blocked by Proton.
+- **GNOME tray** requires the AppIndicator extension — falls back to status window if missing.
+- **Personal, non-commercial use only** — Proton's SDK terms prohibit commercial use without agreement.
+- **Conflict resolution is last-write-wins in v1** — a runtime wizard is deferred.
 
 ---
 
-## Utviklingsmiljø
+## Development environment
 
 ```bash
-# Forutsetninger
+# Prerequisites
 rustup toolchain install stable
 cargo install tauri-cli
 pnpm install
 
-# Utvikling
+# Development
 cargo tauri dev
 
-# Bygg AppImage
+# Build AppImage
 cargo tauri build
 
-# Kjør Rust-tester
-cargo test
+# Run Rust tests
+cargo test --manifest-path src-tauri/Cargo.toml
 
-# Kjør TypeScript-tester
+# Run TypeScript tests
 pnpm test
 ```
 
-### Miljøvariabler (`.env.local`)
+### Environment variables (`.env.local`)
 ```
 PROTON_API_BASE=https://api.proton.me
 PROTON_APP_VERSION=external-drive-protondrive-linux@0.1.0-alpha
@@ -373,23 +378,22 @@ PROTON_APP_VERSION=external-drive-protondrive-linux@0.1.0-alpha
 
 ---
 
-## Fasestatus
+## Phase status
 
-| Fase | Beskrivelse | Status |
-|------|-------------|--------|
-| 0 | Tauri shell, tray, inotify-test | ⬜ Ikke startet |
-| 1 | SRP-autentisering + Keyring | ⬜ Ikke startet |
-| 2 | JS SDK-integrasjon, fil-transfer | ⬜ Ikke startet |
-| 3 | Sync-motor (bi-direksjonell) | ⬜ Ikke startet |
-| 4 | UI, autostart, notifications | ⬜ Ikke startet |
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 0 | Tauri shell, tray, inotify | ✅ Done |
+| 1 | SRP authentication + Keyring | ✅ Done |
+| 2 | JS SDK integration, file transfer | ✅ Done |
+| 3 | Bidirectional sync engine | ✅ Done |
+| 4 | UI, autostart, notifications, AppImage | 🔄 AppImage build pending |
 
 ---
 
-## Referanser
+## References
 
-- [Proton Drive SDK](https://github.com/ProtonDriveApps/sdk) — `../sdk/`
-- [sdk-tech-demo](https://github.com/ProtonDriveApps/sdk-tech-demo) — C# auth-referanse
-- [WebClients](https://github.com/ProtonMail/WebClients) — SRP TypeScript-implementasjon
+- [Proton Drive SDK](https://github.com/ProtonDriveApps/sdk) — `vendor/sdk/`
+- [sdk-tech-demo](https://github.com/ProtonDriveApps/sdk-tech-demo) — C# auth reference
+- [WebClients](https://github.com/ProtonMail/WebClients) — SRP TypeScript implementation
 - [Tauri v2 docs](https://v2.tauri.app)
-- [Proton API](https://proton.me/blog/proton-drive-sdk-preview) — SDK preview-bloggpost
-- [protondrive-linux (DonnieDice)](https://github.com/donniedice/protondrive-linux) — eksisterende uoffisiell klient (rclone-basert)
+- [protondrive-linux (DonnieDice)](https://github.com/donniedice/protondrive-linux) — existing unofficial client (rclone-based)

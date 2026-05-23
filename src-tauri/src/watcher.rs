@@ -47,13 +47,13 @@ pub fn start_watcher(app: AppHandle, watch_path: PathBuf) -> Arc<AtomicBool> {
         };
 
         if let Err(e) = watcher.watch(&watch_path, RecursiveMode::Recursive) {
-            eprintln!("[watcher] Klarte ikke watche {:?}: {e}", watch_path);
+            eprintln!("[watcher] Failed to watch {:?}: {e}", watch_path);
             return;
         }
 
-        eprintln!("[watcher] Lytter på {:?}", watch_path);
+        eprintln!("[watcher] Watching {:?}", watch_path);
 
-        // Debounce: samle events i 300 ms-vinduer før vi emitter.
+        // Debounce: collect events into 300 ms windows before emitting.
         // Value is the last-seen kind for the path.
         let debounce = Duration::from_millis(300);
         let mut pending: HashMap<PathBuf, String> = HashMap::new();

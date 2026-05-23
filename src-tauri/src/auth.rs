@@ -12,13 +12,13 @@ const MODULUS_SIZE: usize = 256; // 2048-bit
 pub enum AuthError {
     #[error("Nettverksfeil: {0}")]
     Network(#[from] reqwest::Error),
-    #[error("SRP-feil: {0}")]
+    #[error("SRP error: {0}")]
     Srp(String),
-    #[error("API-feil {code}: {message}")]
+    #[error("API error {code}: {message}")]
     Api { code: u32, message: String },
-    #[error("Feil brukernavn eller passord")]
+    #[error("Invalid username or password")]
     InvalidCredentials,
-    #[error("2FA påkrevd")]
+    #[error("2FA required")]
     #[allow(dead_code)]
     TwoFactorRequired,
 }

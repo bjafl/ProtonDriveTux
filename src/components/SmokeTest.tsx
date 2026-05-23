@@ -22,34 +22,34 @@ export function SmokeTest() {
       const file = fileInputRef.current?.files?.[0];
       if (!file) return;
 
-      setStatus({ kind: "running", msg: "Henter rot-mappe…" });
+      setStatus({ kind: "running", msg: "Fetching root folder…" });
       const root = await getSyncRoot();
-      if (!root || "error" in root) throw new Error("Kunne ikke hente rot-mappe");
+      if (!root || "error" in root) throw new Error("Failed to fetch root folder");
 
       const rootNode = root as MaybeNode & { uid: string };
 
-      setStatus({ kind: "running", msg: "Klargjør opplasting…" });
+      setStatus({ kind: "running", msg: "Preparing upload…" });
       const uploader = await getFileUploader(rootNode.uid, file.name, {
         mediaType: file.type || "application/octet-stream",
         expectedSize: file.size,
         modificationTime: new Date(file.lastModified),
       });
 
-      setStatus({ kind: "running", msg: "Laster opp…" });
+      setStatus({ kind: "running", msg: "Uploading…" });
       const controller = await uploader.uploadFromFile(file, [], (bytes) => {
-        setStatus({ kind: "running", msg: `Laster opp… ${(bytes / 1024).toFixed(1)} KB` });
+        setStatus({ kind: "running", msg: `Uploading… ${(bytes / 1024).toFixed(1)} KB` });
       });
       const { nodeUid } = await controller.completion();
       setLastNodeUid(nodeUid);
-      setStatus({ kind: "ok", msg: `Opplastet: ${file.name} (nodeUid: ${nodeUid})` });
+      setStatus({ kind: "ok", msg: `Uploaded: ${file.name} (nodeUid: ${nodeUid})` });
     });
   };
 
   const handleDownload = () => {
     run(async () => {
-      if (!lastNodeUid) throw new Error("Last opp en fil først");
+      if (!lastNodeUid) throw new Error("Upload a file first");
 
-      setStatus({ kind: "running", msg: "Laster ned…" });
+      setStatus({ kind: "running", msg: "Downloading…" });
       const downloader = await getFileDownloader(lastNodeUid);
 
       const chunks: Uint8Array<ArrayBuffer>[] = [];
@@ -58,7 +58,7 @@ export function SmokeTest() {
       });
 
       const controller = downloader.downloadToStream(writable, (bytes) => {
-        setStatus({ kind: "running", msg: `Laster ned… ${(bytes / 1024).toFixed(1)} KB` });
+        setStatus({ kind: "running", msg: `Downloading… ${(bytes / 1024).toFixed(1)} KB` });
       });
       await controller.completion();
 
@@ -70,7 +70,7 @@ export function SmokeTest() {
       a.click();
       URL.revokeObjectURL(url);
 
-      setStatus({ kind: "ok", msg: `Nedlastet ${(blob.size / 1024).toFixed(1)} KB — verifiser innhold i nedlastinger` });
+      setStatus({ kind: "ok", msg: `Downloaded ${(blob.size / 1024).toFixed(1)} KB — check content in downloads folder` });
     });
   };
 
@@ -88,7 +88,7 @@ export function SmokeTest() {
             onClick={handleUpload}
             disabled={status.kind === "running"}
           >
-            Last opp
+            Upload
           </button>
         </div>
 
@@ -98,7 +98,7 @@ export function SmokeTest() {
           disabled={status.kind === "running" || !lastNodeUid}
           style={{ alignSelf: "flex-start" }}
         >
-          Last ned siste
+          Download last
         </button>
 
         {status.kind !== "idle" && (

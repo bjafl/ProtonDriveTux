@@ -70,7 +70,7 @@ export function LoginForm({ onLoginSuccess }: Props) {
   async function handleCaptchaSolved(solvedToken: string) {
     setError(null);
     setLoading(true);
-    setStatus("Bekrefter CAPTCHA…");
+    setStatus("Verifying CAPTCHA…");
     try {
       const result = await startLoginWithCaptcha(username, password, solvedToken);
       if (result.twoFactorRequired) {
@@ -90,9 +90,9 @@ export function LoginForm({ onLoginSuccess }: Props) {
   }
 
   async function initSdk(uid: string, accessToken: string, refreshToken: string, userId: string, pwd: string) {
-    setStatus("Avleder nøkkelpassord…");
+    setStatus("Deriving key password…");
     const keyPassword = await deriveKeyPassword(pwd, accessToken, uid);
-    setStatus("Initialiserer Drive-klient…");
+    setStatus("Initializing Drive client…");
     await initDriveClient({ uid, accessToken, refreshToken, userId, keyPassword });
   }
 
@@ -232,7 +232,7 @@ export function LoginForm({ onLoginSuccess }: Props) {
           <div className="captcha-wrap">
             <p className="hint">{t.captchaHint}</p>
             <p className="hint">
-              {t.captchaMethods} <code>{hvMethods.join(", ") || "ukjent"}</code>
+              {t.captchaMethods} <code>{hvMethods.join(", ") || "unknown"}</code>
             </p>
             {loading && <p className="hint">{status}</p>}
             {error && <p className="login-error">{error}</p>}

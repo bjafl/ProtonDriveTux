@@ -62,7 +62,7 @@ function UnlockForm({ onUnlocked, onSessionExpired }: { onUnlocked: () => void; 
     setLoading(true);
     try {
       const tokens = await invoke<SessionTokens | null>("get_session_tokens");
-      if (!tokens) throw new Error("Ingen lagret sesjon — logg inn på nytt");
+      if (!tokens) throw new Error("No stored session — please log in again");
 
       // The stored access token may be expired — proactively refresh before
       // calling deriveKeyPassword (which hits /core/v4/keys/salts and fails
