@@ -63,6 +63,144 @@ etter en vanlig clone. Bygg SDKen én gang med `cd vendor/sdk/js/sdk && npm inst
 }
 ```
 
+### Prosedyre: oppdater SDK-submodulen
+
+Kjør denne prosedyren når brukeren ber om å sjekke/oppdatere SDKen.
+
+#### Steg 1 — finn nye commits
+
+```bash
+# Hent oppdateringer uten å endre noe
+git -C vendor/sdk fetch origin
+
+# Vis commits siden nåværende pin (SHA vises i .gitmodules-commit)
+CURRENT=$(git submodule status vendor/sdk | awk '{print $1}' | tr -d +-) 
+git -C vendor/sdk log "$CURRENT..origin/HEAD" --oneline
+```
+
+Hvis ingen nye commits: meld fra og stopp.
+
+#### Steg 2 — analyser endringene
+
+For hver commit siden pinnen:
+
+```bash
+# Se hvilke filer som er endret
+git -C vendor/sdk show <sha> --name-only
+
+# Se diff for JS SDK-koden (eneste vi bruker)
+git -C vendor/sdk show <sha> -- "js/sdk/src/"
+```
+
+**Vurder risiko per commit:**
+
+| Hva er endret | Risiko |
+|---------------|--------|
+| Kun `cs/`, `kt/`, `swift/`, `CHANGELOG.md` | Ingen — vi bruker bare JS |
+| `js/sdk/src/internal/` | Lav — intern refactor, sjekk om eksportert API er intakt |
+| `js/sdk/src/index.ts` eller re-eksporter | Høy — endring i public API |
+| Eksisterende eksportert funksjon/type fjernet eller signatur endret | **Breaking** |
+| Ny valgfri parameter på funksjon vi kaller | Ikke-breaking |
+| Obligatorisk parameter lagt til | **Breaking** |
+| Felt gjort `optional` som var påkrevd (eller omvendt) | Potensielt breaking |
+
+**Våre SDK-inngangspunkter** (det eneste som er relevant å sjekke):
+```
+ProtonDriveClient — konstruktør-options
+getDriveClient().getNode()
+getDriveClient().listFolderChildren()
+getDriveClient().subscribeToTreeEvents()
+getDriveClient().getFileUploader()          — metadata: { mediaType, expectedSize, modificationTime? }
+getDriveClient().getFileRevisionUploader()  — metadata: samme
+getDriveClient().getFileDownloader()
+getDriveClient().trashNodes()
+getDriveClient().createFolder() / findOrCreateFolder()
+```
+Alle kall er isolert i `src/lib/drive.ts` — kun den filen trenger å endres ved API-brudd.
+
+#### Steg 3 — sjekk npm-avhengigheter i SDKen
+
+```bash
+# Har package.json endret seg siden pinnen?
+git -C vendor/sdk diff "$CURRENT..origin/HEAD" -- js/sdk/package.json
+```
+
+Merk **dependencies** og **devDependencies** separat:
+- Ny/endret **dependency**: `npm install` er nødvendig etter checkout.
+- Ny/endret **devDependency**: bare relevant for bygging; `npm install` er fortsatt nok.
+- Endring i **build-scriptet** (`scripts.build`): bruk det nye scriptet, ikke hardkodet `tsc`.
+
+#### Steg 4 — rapporter og spør brukeren
+
+Presenter et sammendrag:
+
+```
+Fant N nye commits siden <gammel-sha>:
+  - <sha> <tittel>  [ingen JS-endring / lav risiko / BREAKING]
+  - ...
+
+JS-avhengigheter endret: ja/nei
+Brudd på våre API-kall: ja/nei — [detaljer]
+```
+
+Spør deretter:
+- Hvis **ingen breaking changes**: «Ser trygt ut. Skal jeg oppdatere submodulen?»
+- Hvis **breaking changes**: beskriv hva som brytes og foreslå konkrete endringer i
+  `src/lib/drive.ts` (og evt. `src/lib/sync.ts`). Spør om brukeren vil gå videre med
+  oppdateringen og fikse koden, eller vente.
+- Hvis usikkert: beskriv usikkerheten og la brukeren bestemme.
+
+#### Steg 5 — utfør oppdateringen (kun etter brukerens godkjenning)
+
+```bash
+# 1. Gå til ny commit
+NEW_SHA=$(git -C vendor/sdk rev-parse origin/HEAD)
+git -C vendor/sdk checkout "$NEW_SHA"
+
+# 2. Installer npm-avhengigheter (alltid trygt, nødvendig hvis deps endret)
+cd vendor/sdk/js/sdk
+npm install
+
+# 3. Bygg SDKen — bruk build:ci for ren bygg hvis deps ble endret, ellers build
+npm run build          # eller: npm run build:ci
+cd ../../../..
+
+# 4. Oppdater prosjektets avhengigheter (plukker opp evt. endringer i dist/)
+pnpm install
+
+# 5. Typesjekk + tester
+pnpm tsc --noEmit
+pnpm test
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+Hvis typesjekk feiler pga. breaking API-endringer: implementer de avtalte rettelsene
+i `src/lib/drive.ts` (og evt. `src/lib/sync.ts`) og kjør testene på nytt.
+
+#### Steg 6 — commit
+
+```bash
+git add vendor/sdk pnpm-lock.yaml   # legg til src/lib/drive.ts m.fl. hvis endret
+git commit -m "chore(sdk): advance submodule to <ny-sha-kort>
+
+<liste over commits siden forrige pin, med risikovurdering>
+<«No changes required» eller beskriv hva som ble fikset>
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
+```
+
+#### Fallback: rulle tilbake
+
+Hvis noe går galt etter oppdatering:
+```bash
+git -C vendor/sdk checkout <gammel-sha>
+cd vendor/sdk/js/sdk && npm run build && cd ../../../..
+pnpm install
+git checkout vendor/sdk   # tilbakestill staged endring
+```
+
+---
+
 ### Viktige SDK-begrensninger
 - SDKen er **ikke produksjonsklar** — breaking changes vil komme (ny crypto-modell)
 - SDKen inkluderer **ikke** autentisering, session management eller adresse-provider — dette implementeres selv
