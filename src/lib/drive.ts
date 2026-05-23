@@ -281,7 +281,7 @@ export async function deriveKeyPassword(
       "x-pm-appversion": APP_VERSION,
     },
   });
-  if (!resp.ok) throw new Error(`Failed to fetch key salts: ${resp.status}`);
+  if (!resp.ok) throw new Error(`Key salts request failed: ${resp.status}`);
   const data = (await resp.json()) as {
     KeySalts: Array<{ ID: string; KeySalt: string | null }>;
   };

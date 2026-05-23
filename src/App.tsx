@@ -96,6 +96,12 @@ function UnlockForm({ onUnlocked, onSessionExpired }: { onUnlocked: () => void; 
       }
       onUnlocked();
     } catch (err: unknown) {
+      // 4xx from any step (salts, refresh, init) means the session is invalid.
+      // Go straight to LoginForm — no need to manually click "Switch account".
+      if (isAuthFailure(err)) {
+        onSessionExpired();
+        return;
+      }
       setError(String(err));
     } finally {
       setLoading(false);
