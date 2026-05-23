@@ -22,6 +22,17 @@ pub struct Db {
 unsafe impl Send for Db {}
 unsafe impl Sync for Db {}
 
+fn row_to_file_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileState> {
+    Ok(FileState {
+        remote_id: row.get(0)?,
+        local_path: row.get(1)?,
+        etag: row.get(2)?,
+        modified_at: row.get(3)?,
+        size_bytes: row.get(4)?,
+        sync_state: row.get(5)?,
+    })
+}
+
 impl Db {
     pub fn open(data_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(data_dir)
@@ -99,16 +110,7 @@ impl Db {
             "SELECT remote_id, local_path, etag, modified_at, size_bytes, sync_state
              FROM files WHERE remote_id = ?1",
             params![remote_id],
-            |row| {
-                Ok(FileState {
-                    remote_id: row.get(0)?,
-                    local_path: row.get(1)?,
-                    etag: row.get(2)?,
-                    modified_at: row.get(3)?,
-                    size_bytes: row.get(4)?,
-                    sync_state: row.get(5)?,
-                })
-            },
+            row_to_file_state,
         )
         .optional()
     }
@@ -119,16 +121,7 @@ impl Db {
             "SELECT remote_id, local_path, etag, modified_at, size_bytes, sync_state
              FROM files WHERE local_path = ?1",
             params![local_path],
-            |row| {
-                Ok(FileState {
-                    remote_id: row.get(0)?,
-                    local_path: row.get(1)?,
-                    etag: row.get(2)?,
-                    modified_at: row.get(3)?,
-                    size_bytes: row.get(4)?,
-                    sync_state: row.get(5)?,
-                })
-            },
+            row_to_file_state,
         )
         .optional()
     }
@@ -148,16 +141,7 @@ impl Db {
             "SELECT remote_id, local_path, etag, modified_at, size_bytes, sync_state
              FROM files ORDER BY local_path",
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(FileState {
-                remote_id: row.get(0)?,
-                local_path: row.get(1)?,
-                etag: row.get(2)?,
-                modified_at: row.get(3)?,
-                size_bytes: row.get(4)?,
-                sync_state: row.get(5)?,
-            })
-        })?;
+        let rows = stmt.query_map([], row_to_file_state)?;
         rows.collect()
     }
 

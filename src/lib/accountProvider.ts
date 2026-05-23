@@ -5,9 +5,7 @@ import type {
   ProtonDriveAccount,
   ProtonDriveAccountAddress,
 } from "@protontech/drive-sdk";
-
-const BASE_URL = import.meta.env.VITE_PROTON_API_BASE ?? "https://mail.proton.me/api";
-const APP_VERSION = import.meta.env.VITE_PROTON_APP_VERSION ?? "external-drive-protondrive@0.1.0-alpha";
+import { BASE_URL, APP_VERSION } from "./config";
 
 interface UserKey {
   ID: string;
@@ -121,10 +119,12 @@ export function createAccountProvider(
   getKeyPassword: () => string,
 ): ProtonDriveAccount {
   let cachedAddresses: ProtonDriveAccountAddress[] | null = null;
+  let cacheExpiry = 0;
+  const ADDRESS_CACHE_TTL_MS = 60 * 60 * 1_000; // 1 hour
   const publicKeyCache = new Map<string, PublicKey[]>();
 
   async function fetchAddresses(): Promise<ProtonDriveAccountAddress[]> {
-    if (cachedAddresses) return cachedAddresses;
+    if (cachedAddresses && Date.now() < cacheExpiry) return cachedAddresses;
     const token = getAccessToken();
     const uid = getUid();
     const keyPassword = getKeyPassword();
@@ -138,6 +138,7 @@ export function createAccountProvider(
     cachedAddresses = await Promise.all(
       data.Addresses.map((a) => buildAddress(a, userKeys, keyPassword)),
     );
+    cacheExpiry = Date.now() + ADDRESS_CACHE_TTL_MS;
     return cachedAddresses;
   }
 

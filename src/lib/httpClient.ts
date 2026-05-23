@@ -4,8 +4,7 @@ import type {
   ProtonDriveHTTPClientJsonRequest,
 } from "@protontech/drive-sdk";
 import { fetch } from "./tauriFetch";
-
-const APP_VERSION = import.meta.env.VITE_PROTON_APP_VERSION ?? "external-drive-protondrive-linux@0.1.0-alpha";
+import { APP_VERSION } from "./config";
 
 export function createHttpClient(
   getAccessToken: () => string | null,

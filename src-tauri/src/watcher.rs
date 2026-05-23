@@ -84,6 +84,9 @@ pub fn start_watcher(app: AppHandle, watch_path: PathBuf) -> Arc<AtomicBool> {
                 }
                 Ok(Err(e)) => eprintln!("[watcher] Feil: {e}"),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if stop_thread.load(Ordering::Relaxed) {
+                        break;
+                    }
                     if deadline.map(|d| Instant::now() >= d).unwrap_or(false) {
                         for (path, kind) in pending.drain() {
                             let event = WatchEvent {

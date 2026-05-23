@@ -8,10 +8,39 @@ use crate::auth::{AuthSession, ProtonAuth};
 use crate::db::{Db, FileState};
 use crate::keyring;
 
+#[derive(Debug, thiserror::Error)]
+pub enum CommandError {
+    #[error(transparent)]
+    Db(#[from] rusqlite::Error),
+    #[error("{0}")]
+    Other(String),
+}
+
+impl serde::Serialize for CommandError {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
+impl From<String> for CommandError {
+    fn from(s: String) -> Self {
+        Self::Other(s)
+    }
+}
+
+impl From<&str> for CommandError {
+    fn from(s: &str) -> Self {
+        Self::Other(s.to_string())
+    }
+}
+
 pub struct AppState {
     pub session: Mutex<Option<AuthSession>>,
     pub watcher_stop: Mutex<Option<Arc<AtomicBool>>>,
     pub last_tray_status: Mutex<Option<TrayStatusPayload>>,
+    pub icon_idle: tauri::image::Image<'static>,
+    pub icon_syncing: tauri::image::Image<'static>,
+    pub icon_error: tauri::image::Image<'static>,
 }
 
 impl AppState {
@@ -20,6 +49,12 @@ impl AppState {
             session: Mutex::new(None),
             watcher_stop: Mutex::new(None),
             last_tray_status: Mutex::new(None),
+            icon_idle: tauri::image::Image::from_bytes(include_bytes!("../icons/tray-idle.png"))
+                .expect("tray-idle.png must be a valid PNG"),
+            icon_syncing: tauri::image::Image::from_bytes(include_bytes!("../icons/tray-syncing.png"))
+                .expect("tray-syncing.png must be a valid PNG"),
+            icon_error: tauri::image::Image::from_bytes(include_bytes!("../icons/tray-error.png"))
+                .expect("tray-error.png must be a valid PNG"),
         }
     }
 }
@@ -56,7 +91,7 @@ pub async fn store_tokens(
     refresh_token: String,
     user_id: String,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let session = AuthSession {
         uid,
         access_token,
@@ -74,7 +109,7 @@ pub async fn store_tokens(
 }
 
 #[tauri::command]
-pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn logout(state: State<'_, AppState>) -> Result<(), CommandError> {
     let session = state.session.lock().unwrap().clone();
 
     if let Some(ref s) = session {
@@ -98,10 +133,11 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn store_key_password(key_password: String) -> Result<(), String> {
+pub async fn store_key_password(key_password: String) -> Result<(), CommandError> {
     keyring::store_key_password(&key_password)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -152,7 +188,7 @@ pub async fn open_captcha_window(
     methods: Vec<String>,
     theme: Option<String>,
     app: tauri::AppHandle,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     // Close any stale captcha window from a previous attempt.
     if let Some(old) = app.get_webview_window("captcha") {
         let _ = old.close();
@@ -255,8 +291,8 @@ pub fn close_captcha_window(app: tauri::AppHandle) {
 // ── DB commands ──────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_all_file_states(db: State<'_, Db>) -> Result<Vec<FileState>, String> {
-    db.all_files().map_err(|e| e.to_string())
+pub fn get_all_file_states(db: State<'_, Db>) -> Result<Vec<FileState>, CommandError> {
+    Ok(db.all_files()?)
 }
 
 #[tauri::command]
@@ -268,7 +304,7 @@ pub fn upsert_file_state(
     size_bytes: Option<i64>,
     sync_state: String,
     db: State<'_, Db>,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let state = FileState {
         remote_id,
         local_path,
@@ -277,7 +313,7 @@ pub fn upsert_file_state(
         size_bytes,
         sync_state,
     };
-    db.upsert_file(&state).map_err(|e| e.to_string())
+    Ok(db.upsert_file(&state)?)
 }
 
 #[tauri::command]
@@ -285,30 +321,29 @@ pub fn set_file_sync_state(
     remote_id: String,
     sync_state: String,
     db: State<'_, Db>,
-) -> Result<(), String> {
-    db.set_sync_state(&remote_id, &sync_state)
-        .map_err(|e| e.to_string())
+) -> Result<(), CommandError> {
+    Ok(db.set_sync_state(&remote_id, &sync_state)?)
 }
 
 #[tauri::command]
 pub fn get_file_state_by_remote_id(
     remote_id: String,
     db: State<'_, Db>,
-) -> Result<Option<FileState>, String> {
-    db.get_by_remote_id(&remote_id).map_err(|e| e.to_string())
+) -> Result<Option<FileState>, CommandError> {
+    Ok(db.get_by_remote_id(&remote_id)?)
 }
 
 #[tauri::command]
 pub fn get_file_state_by_local_path(
     local_path: String,
     db: State<'_, Db>,
-) -> Result<Option<FileState>, String> {
-    db.get_by_local_path(&local_path).map_err(|e| e.to_string())
+) -> Result<Option<FileState>, CommandError> {
+    Ok(db.get_by_local_path(&local_path)?)
 }
 
 #[tauri::command]
-pub fn get_db_sync_config(key: String, db: State<'_, Db>) -> Result<Option<String>, String> {
-    db.get_sync_config(&key).map_err(|e| e.to_string())
+pub fn get_db_sync_config(key: String, db: State<'_, Db>) -> Result<Option<String>, CommandError> {
+    Ok(db.get_sync_config(&key)?)
 }
 
 #[tauri::command]
@@ -316,21 +351,23 @@ pub fn set_db_sync_config(
     key: String,
     value: String,
     db: State<'_, Db>,
-) -> Result<(), String> {
-    db.set_sync_config(&key, &value).map_err(|e| e.to_string())
+) -> Result<(), CommandError> {
+    Ok(db.set_sync_config(&key, &value)?)
 }
 
 // ── Local file I/O commands ──────────────────────────────────────────────────
 
 /// Creates the directory at abs_path (including parents) if it doesn't already exist.
 #[tauri::command]
-pub fn ensure_local_dir(abs_path: String) -> Result<(), String> {
-    std::fs::create_dir_all(&abs_path).map_err(|e| format!("create_dir_all {abs_path}: {e}"))
+pub fn ensure_local_dir(abs_path: String) -> Result<(), CommandError> {
+    std::fs::create_dir_all(&abs_path)
+        .map_err(|e| format!("create_dir_all {abs_path}: {e}"))
+        .map_err(Into::into)
 }
 
 /// Lists regular files (non-directories) directly inside abs_path. Returns absolute paths.
 #[tauri::command]
-pub fn list_local_dir(abs_path: String) -> Result<Vec<String>, String> {
+pub fn list_local_dir(abs_path: String) -> Result<Vec<String>, CommandError> {
     let entries = std::fs::read_dir(&abs_path)
         .map_err(|e| format!("read_dir {abs_path}: {e}"))?;
     let mut files = Vec::new();
@@ -344,14 +381,14 @@ pub fn list_local_dir(abs_path: String) -> Result<Vec<String>, String> {
 
 /// Reads a local file and returns its contents as a base64-encoded string.
 #[tauri::command]
-pub fn read_local_file(abs_path: String) -> Result<String, String> {
+pub fn read_local_file(abs_path: String) -> Result<String, CommandError> {
     let bytes = std::fs::read(&abs_path).map_err(|e| format!("read {abs_path}: {e}"))?;
     Ok(STANDARD.encode(&bytes))
 }
 
 /// Decodes a base64 string and writes it to a local file, creating parent dirs as needed.
 #[tauri::command]
-pub fn write_local_file(abs_path: String, content_b64: String) -> Result<(), String> {
+pub fn write_local_file(abs_path: String, content_b64: String) -> Result<(), CommandError> {
     let bytes = STANDARD
         .decode(&content_b64)
         .map_err(|e| format!("base64 decode: {e}"))?;
@@ -359,13 +396,15 @@ pub fn write_local_file(abs_path: String, content_b64: String) -> Result<(), Str
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
     }
-    std::fs::write(&abs_path, &bytes).map_err(|e| format!("write {abs_path}: {e}"))
+    std::fs::write(&abs_path, &bytes)
+        .map_err(|e| format!("write {abs_path}: {e}"))
+        .map_err(Into::into)
 }
 
 /// Creates (or truncates) a local file, creating parent dirs as needed.
 /// Used to initialise a file before streaming chunks via write_local_file_chunk.
 #[tauri::command]
-pub fn truncate_local_file(abs_path: String) -> Result<(), String> {
+pub fn truncate_local_file(abs_path: String) -> Result<(), CommandError> {
     if let Some(parent) = std::path::Path::new(&abs_path).parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
@@ -377,7 +416,7 @@ pub fn truncate_local_file(abs_path: String) -> Result<(), String> {
 /// Decodes a base64 chunk and appends it to an existing file.
 /// Must be called after truncate_local_file to ensure the file exists.
 #[tauri::command]
-pub fn write_local_file_chunk(abs_path: String, content_b64: String) -> Result<(), String> {
+pub fn write_local_file_chunk(abs_path: String, content_b64: String) -> Result<(), CommandError> {
     use std::io::Write;
     let bytes = STANDARD
         .decode(&content_b64)
@@ -386,13 +425,15 @@ pub fn write_local_file_chunk(abs_path: String, content_b64: String) -> Result<(
         .append(true)
         .open(&abs_path)
         .map_err(|e| format!("open append {abs_path}: {e}"))?;
-    file.write_all(&bytes).map_err(|e| format!("write chunk {abs_path}: {e}"))
+    file.write_all(&bytes)
+        .map_err(|e| format!("write chunk {abs_path}: {e}"))
+        .map_err(Into::into)
 }
 
 /// Moves a local file into `{sync_root}/.trash/` instead of permanently deleting it.
 /// Creates the trash directory as needed. Silently succeeds if the source does not exist.
 #[tauri::command]
-pub fn trash_local_file(abs_path: String, sync_root: String) -> Result<(), String> {
+pub fn trash_local_file(abs_path: String, sync_root: String) -> Result<(), CommandError> {
     let src = std::path::Path::new(&abs_path);
     if !src.exists() {
         return Ok(());
@@ -412,32 +453,34 @@ pub fn trash_local_file(abs_path: String, sync_root: String) -> Result<(), Strin
     let dest_name = format!("{}.{ts}", filename.to_string_lossy());
     let dest = trash_dir.join(dest_name);
 
-    std::fs::rename(src, &dest).map_err(|e| format!("rename {abs_path} → {}: {e}", dest.display()))
+    std::fs::rename(src, &dest)
+        .map_err(|e| format!("rename {abs_path} → {}: {e}", dest.display()))
+        .map_err(Into::into)
 }
 
 /// Deletes a local file. Silently succeeds if the file does not exist.
 #[tauri::command]
-pub fn delete_local_file(abs_path: String) -> Result<(), String> {
+pub fn delete_local_file(abs_path: String) -> Result<(), CommandError> {
     match std::fs::remove_file(&abs_path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("remove_file {abs_path}: {e}")),
+        Err(e) => Err(format!("remove_file {abs_path}: {e}").into()),
     }
 }
 
 /// Recursively deletes a local directory. Silently succeeds if the path does not exist.
 #[tauri::command]
-pub fn delete_local_dir(abs_path: String) -> Result<(), String> {
+pub fn delete_local_dir(abs_path: String) -> Result<(), CommandError> {
     match std::fs::remove_dir_all(&abs_path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("remove_dir_all {abs_path}: {e}")),
+        Err(e) => Err(format!("remove_dir_all {abs_path}: {e}").into()),
     }
 }
 
 /// Returns the modification time (in ms since Unix epoch) and size of a local file.
 #[tauri::command]
-pub fn stat_local_file(abs_path: String) -> Result<FileStat, String> {
+pub fn stat_local_file(abs_path: String) -> Result<FileStat, CommandError> {
     let meta = std::fs::metadata(&abs_path)
         .map_err(|e| format!("stat {abs_path}: {e}"))?;
     let mtime_ms = meta
@@ -455,9 +498,10 @@ pub fn stat_local_file(abs_path: String) -> Result<FileStat, String> {
 
 /// Renames (moves) a local file. Fails if the source does not exist.
 #[tauri::command]
-pub fn rename_local_file(from_path: String, to_path: String) -> Result<(), String> {
+pub fn rename_local_file(from_path: String, to_path: String) -> Result<(), CommandError> {
     std::fs::rename(&from_path, &to_path)
         .map_err(|e| format!("rename {from_path} → {to_path}: {e}"))
+        .map_err(Into::into)
 }
 
 // ── Local root management ─────────────────────────────────────────────────────
@@ -478,7 +522,7 @@ pub struct LocalRootInfo {
 }
 
 #[tauri::command]
-pub fn validate_local_root(path: String) -> Result<LocalRootInfo, String> {
+pub fn validate_local_root(path: String) -> Result<LocalRootInfo, CommandError> {
     let p = std::path::Path::new(&path);
 
     if !p.is_absolute() {
@@ -569,18 +613,17 @@ fn count_files_capped(dir: &std::path::Path, cap: u32) -> u32 {
 }
 
 #[tauri::command]
-pub fn set_local_root(path: String, db: State<'_, Db>) -> Result<(), String> {
+pub fn set_local_root(path: String, db: State<'_, Db>) -> Result<(), CommandError> {
     let p = std::path::Path::new(&path);
     if !p.exists() {
         std::fs::create_dir_all(p).map_err(|e| format!("Cannot create directory: {e}"))?;
     }
-    db.set_sync_config("local_root", &path)
-        .map_err(|e| e.to_string())
+    Ok(db.set_sync_config("local_root", &path)?)
 }
 
 #[tauri::command]
-pub fn get_local_root(db: State<'_, Db>) -> Result<Option<String>, String> {
-    db.get_sync_config("local_root").map_err(|e| e.to_string())
+pub fn get_local_root(db: State<'_, Db>) -> Result<Option<String>, CommandError> {
+    Ok(db.get_sync_config("local_root")?)
 }
 
 // ── Recursive directory listing ───────────────────────────────────────────────
@@ -595,7 +638,7 @@ pub struct LocalFileEntry {
 }
 
 #[tauri::command]
-pub fn list_dir_recursive(abs_path: String) -> Result<Vec<LocalFileEntry>, String> {
+pub fn list_dir_recursive(abs_path: String) -> Result<Vec<LocalFileEntry>, CommandError> {
     let root = std::path::Path::new(&abs_path);
     let mut results = Vec::new();
     collect_recursive(root, root, &mut results, 10_000)?;
@@ -657,7 +700,7 @@ pub fn start_file_watcher(
     path: String,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     // Stop any existing watcher before starting a new one.
     if let Some(old_stop) = state.watcher_stop.lock().unwrap().take() {
         old_stop.store(true, Ordering::Relaxed);
@@ -675,15 +718,15 @@ pub fn stop_file_watcher(state: State<'_, AppState>) {
 }
 
 #[tauri::command]
-pub fn delete_file_state(remote_id: String, db: State<'_, Db>) -> Result<(), String> {
-    db.delete_by_remote_id(&remote_id).map_err(|e| e.to_string())
+pub fn delete_file_state(remote_id: String, db: State<'_, Db>) -> Result<(), CommandError> {
+    Ok(db.delete_by_remote_id(&remote_id)?)
 }
 
 /// Removes all file-state rows. Called when the user changes the sync root so the
 /// new sync session starts with a clean slate instead of treating old paths as conflicts.
 #[tauri::command]
-pub fn clear_all_file_states(db: State<'_, Db>) -> Result<(), String> {
-    db.clear_all().map_err(|e| e.to_string())
+pub fn clear_all_file_states(db: State<'_, Db>) -> Result<(), CommandError> {
+    Ok(db.clear_all()?)
 }
 
 #[tauri::command]
@@ -719,7 +762,7 @@ pub fn get_autostart_enabled() -> bool {
 }
 
 #[tauri::command]
-pub fn enable_autostart() -> Result<(), String> {
+pub fn enable_autostart() -> Result<(), CommandError> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let path = autostart_path()?;
     if let Some(parent) = path.parent() {
@@ -729,16 +772,18 @@ pub fn enable_autostart() -> Result<(), String> {
         "[Desktop Entry]\nType=Application\nName=Proton Drive Sync\nExec={} --minimized\nHidden=false\nX-GNOME-Autostart-enabled=true\n",
         exe.display()
     );
-    std::fs::write(&path, content).map_err(|e| e.to_string())
+    std::fs::write(&path, content)
+        .map_err(|e| e.to_string())
+        .map_err(Into::into)
 }
 
 #[tauri::command]
-pub fn disable_autostart() -> Result<(), String> {
+pub fn disable_autostart() -> Result<(), CommandError> {
     let path = autostart_path()?;
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(e.to_string().into()),
     }
 }
 
@@ -766,7 +811,7 @@ pub fn update_tray_status(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     payload: TrayStatusPayload,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     #[allow(unused_imports)]
     use tauri::Manager;
@@ -803,17 +848,14 @@ pub fn update_tray_status(
     };
     tray.set_tooltip(Some(tooltip.as_str())).map_err(|e| e.to_string())?;
 
-    // Build tray icon to reflect state.
-    let icon_bytes: &[u8] = if payload.paused {
-        include_bytes!("../icons/tray-idle.png")
-    } else if payload.syncing {
-        include_bytes!("../icons/tray-syncing.png")
-    } else if payload.error_count > 0 {
-        include_bytes!("../icons/tray-error.png")
+    // Use pre-decoded icon from AppState to avoid PNG decoding on every status update.
+    let icon = if payload.syncing && !payload.paused {
+        state.icon_syncing.clone()
+    } else if payload.error_count > 0 && !payload.paused {
+        state.icon_error.clone()
     } else {
-        include_bytes!("../icons/tray-idle.png")
+        state.icon_idle.clone()
     };
-    let icon = tauri::image::Image::from_bytes(icon_bytes).map_err(|e| e.to_string())?;
     tray.set_icon(Some(icon)).map_err(|e| e.to_string())?;
 
     // Rebuild menu.

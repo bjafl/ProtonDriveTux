@@ -36,7 +36,7 @@ export { findWatchedFolderByPath };
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-interface WatchEvent {
+export interface WatchEvent {
   absPath: string;
   kind: "create" | "modify" | "delete";
 }
@@ -46,7 +46,7 @@ export interface SyncStatus {
   errors: Array<{ path: string; error: string }>;
 }
 
-interface FileState {
+export interface FileState {
   remoteId: string;
   localPath: string;
   etag: string | null;
@@ -204,7 +204,9 @@ async function waitForFileStable(absPath: string): Promise<FileStat | null> {
   if (!second) return null;
   if (second.mtimeMs === first.mtimeMs && second.sizeBytes === first.sizeBytes) return second;
   await new Promise<void>((r) => setTimeout(r, 1_000));
-  return statFile(absPath);
+  const third = await statFile(absPath);
+  if (!third || third.mtimeMs !== second.mtimeMs || third.sizeBytes !== second.sizeBytes) return null;
+  return third;
 }
 
 // ── Config loading ───────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@ import { initDriveClient, deriveKeyPassword, refreshTokens, releaseDriveClient, 
 import { AuthExpiredError } from "./lib/auth";
 import { startSync, setSyncStatusCallback, triggerFullSync, pauseSync, resumeSync, isSyncPaused } from "./lib/sync";
 import { defaultSyncPath } from "./lib/paths";
-import type { SyncStatus } from "./lib/sync";
+import type { SyncStatus, WatchEvent, FileState, SelectedFolderRecord } from "./lib/sync";
 import { useLang } from "./lib/i18n";
 import { useTheme } from "./lib/theme";
 import "./App.css";
@@ -24,27 +24,13 @@ interface SessionTokens {
   userId: string;
 }
 
-interface WatchEvent {
-  absPath: string;
-  kind: "create" | "modify" | "delete";
-}
-
 interface LocalEvent {
   absPath: string;
   kind: string;
   time: string;
 }
 
-interface FileState {
-  remoteId: string;
-  localPath: string;
-  etag: string | null;
-  modifiedAt: number | null;
-  sizeBytes: number | null;
-  syncState: string;
-}
-
-type AppState = "loading" | "unlocking" | "loggedOut" | "onboarding" | "ready";
+type AppState ="loading" | "unlocking" | "loggedOut" | "onboarding" | "ready";
 
 
 function UnlockForm({ onUnlocked, onSessionExpired }: { onUnlocked: () => void; onSessionExpired: () => void }) {
@@ -169,13 +155,6 @@ function syncStateBadge(state: string): { label: string; color: string } {
   }
 }
 
-interface SelectedFolderRecord {
-  uid: string;
-  name: string;
-  drivePath: string;
-  mode: "files" | "recursive";
-}
-
 function MainView({
   onSessionExpired,
   onOpenOnboarding,
@@ -221,7 +200,6 @@ function MainView({
     let cancelled = false;
     let unlistenLocal: (() => void) | null = null;
     let unlistenPauseTray: (() => void) | null = null;
-    let pollInterval: ReturnType<typeof setInterval> | null = null;
 
     // Wire up session-expired callback so a dead refresh token triggers re-login.
     setSessionExpiredCallback(onSessionExpired);
@@ -247,14 +225,26 @@ function MainView({
       }
       setSyncPath(localRoot);
 
+      const refreshFileStates = async () => {
+        try {
+          const files = await invoke<FileState[]>("get_all_file_states");
+          if (!cancelled) setFileStates(files);
+        } catch { /* ignore */ }
+      };
+
       setSyncStatusCallback((s) => {
-        if (!cancelled) setSyncStatus({ ...s });
+        if (!cancelled) {
+          setSyncStatus({ ...s });
+          refreshFileStates();
+        }
       });
 
       await invoke("start_file_watcher", { path: localRoot }).catch(console.error);
       const stop = await startSync();
       if (cancelled) { stop(); return; }
       stopSyncRef.current = stop;
+
+      await refreshFileStates();
 
       unlistenPauseTray = await listen("sync://pause-toggle", () => {
         if (cancelled) return;
@@ -281,13 +271,6 @@ function MainView({
         );
       });
 
-      pollInterval = setInterval(async () => {
-        if (cancelled) return;
-        try {
-          const files = await invoke<FileState[]>("get_all_file_states");
-          if (!cancelled) setFileStates(files);
-        } catch { /* ignore */ }
-      }, 3_000);
     }
 
     init().catch(console.error);
@@ -297,7 +280,6 @@ function MainView({
       setSessionExpiredCallback(null);
       unlistenPauseTray?.();
       unlistenLocal?.();
-      if (pollInterval !== null) clearInterval(pollInterval);
       stopSyncRef.current?.();
       stopSyncRef.current = null;
     };

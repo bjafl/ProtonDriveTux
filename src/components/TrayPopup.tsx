@@ -24,19 +24,26 @@ export function TrayPopup() {
       if (s) setStatus(s);
     });
 
-    const unlistenStatus = listen<TrayStatus>("tray://status", (e) => setStatus(e.payload));
+    let statusUnlisten: (() => void) | null = null;
+    let focusUnlisten: (() => void) | null = null;
+    let cancelled = false;
+
+    listen<TrayStatus>("tray://status", (e) => setStatus(e.payload)).then((f) => {
+      if (cancelled) f(); else statusUnlisten = f;
+    });
 
     const win = getCurrentWindow();
-    const unlistenFocus = win.onFocusChanged(({ payload: focused }) => {
-      if (!focused) {
-        // Small delay so button clicks in the popup register before the window hides.
-        setTimeout(() => win.hide(), 150);
-      }
+    // Small delay so button clicks in the popup register before the window hides.
+    win.onFocusChanged(({ payload: focused }) => {
+      if (!focused) setTimeout(() => win.hide(), 150);
+    }).then((f) => {
+      if (cancelled) f(); else focusUnlisten = f;
     });
 
     return () => {
-      unlistenStatus.then((f) => f());
-      unlistenFocus.then((f) => f());
+      cancelled = true;
+      statusUnlisten?.();
+      focusUnlisten?.();
     };
   }, []);
 

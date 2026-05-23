@@ -24,10 +24,7 @@ import { createHttpClient } from "./httpClient";
 import { initCrypto, createOpenPGPCryptoModule } from "./cryptoModule";
 import { createSrpModule, computeKeyPassword } from "./srpModule";
 import { AuthExpiredError } from "./auth";
-
-const BASE_URL = import.meta.env.VITE_PROTON_API_BASE ?? "https://mail.proton.me/api";
-const APP_VERSION =
-  import.meta.env.VITE_PROTON_APP_VERSION ?? "external-drive-protondrive-linux@0.1.0-alpha";
+import { BASE_URL, APP_VERSION } from "./config";
 
 export interface DriveSession {
   uid: string;
