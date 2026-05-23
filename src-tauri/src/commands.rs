@@ -606,7 +606,7 @@ fn count_files_capped(dir: &std::path::Path, cap: u32) -> u32 {
         if ft.is_file() {
             count += 1;
         } else if ft.is_dir() {
-            count = count.saturating_add(count_files_capped(&entry.path(), cap - count));
+            count += count_files_capped(&entry.path(), cap - count);
         }
     }
     count

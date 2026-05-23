@@ -130,7 +130,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
           <p className="hint">{t.onboardingLocalRootHint}</p>
 
           <div className="field">
-            <label htmlFor="local-root-input">Mappe</label>
+            <label htmlFor="local-root-input">{t.localFolder}</label>
             <input
               id="local-root-input"
               type="text"

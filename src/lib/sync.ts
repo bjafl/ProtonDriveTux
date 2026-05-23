@@ -166,7 +166,7 @@ function recordError(path: string, error: string): void {
   if (now - _lastErrorNotificationMs >= ERROR_NOTIFY_THROTTLE_MS) {
     _lastErrorNotificationMs = now;
     invoke("show_notification", {
-      title: "Proton Drive Sync — feil",
+      title: "Proton Drive Sync — error",
       body: `${path.split("/").pop() ?? path}: ${error}`,
     }).catch(() => {});
   }
@@ -184,6 +184,23 @@ function isSuppressed(absPath: string): boolean {
   if (Date.now() < until) return true;
   suppressUntil.delete(absPath);
   return false;
+}
+
+// ── MIME type helper ─────────────────────────────────────────────────────────
+
+function guessMimeType(filename: string): string {
+  const ext = filename.slice(filename.lastIndexOf(".") + 1).toLowerCase();
+  const map: Record<string, string> = {
+    txt: "text/plain", md: "text/markdown", csv: "text/csv",
+    html: "text/html", htm: "text/html", xml: "application/xml",
+    pdf: "application/pdf", json: "application/json",
+    zip: "application/zip", gz: "application/gzip", tar: "application/x-tar",
+    jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+    gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
+    mp3: "audio/mpeg", ogg: "audio/ogg", wav: "audio/wav",
+    mp4: "video/mp4", webm: "video/webm", mkv: "video/x-matroska",
+  };
+  return map[ext] ?? "application/octet-stream";
 }
 
 // ── File stability helpers ───────────────────────────────────────────────────
@@ -577,7 +594,7 @@ async function handleLocalUpsert(absPath: string, checkStability: boolean): Prom
     const filename = absPath.split("/").pop() ?? absPath;
     const file = new File([blob], filename, { lastModified: stat.mtimeMs });
     const metadata = {
-      mediaType: "application/octet-stream",
+      mediaType: guessMimeType(filename),
       expectedSize: blob.size,
       modificationTime: new Date(stat.mtimeMs),
     };

@@ -269,7 +269,7 @@ export function LoginForm({ onLoginSuccess }: Props) {
             </div>
             {error && <p className="login-error">{error}</p>}
             <button type="submit" className="login-btn" disabled={loading}>
-              {loading ? t.confirmBtn : t.confirmBtn}
+              {loading ? t.loggingIn : t.confirmBtn}
             </button>
           </form>
         )}

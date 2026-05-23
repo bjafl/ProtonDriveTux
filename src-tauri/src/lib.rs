@@ -275,8 +275,7 @@ fn setup_window_close_handler(app: &tauri::App) {
 }
 
 fn handle_minimized_flag(app: &tauri::App) {
-    let args: Vec<String> = std::env::args().collect();
-    if args.contains(&"--minimized".to_string()) {
+    if std::env::args().any(|a| a == "--minimized") {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.hide();
         }

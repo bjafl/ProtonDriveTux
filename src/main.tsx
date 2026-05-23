@@ -12,7 +12,9 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ThemeProvider>
       {isTrayPopup ? (
-        <TrayPopup />
+        <LangProvider>
+          <TrayPopup />
+        </LangProvider>
       ) : (
         <LangProvider>
           <App />
