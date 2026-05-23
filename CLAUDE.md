@@ -30,31 +30,34 @@ protondrive-linux-client/   ← prosjektrot
 │   ├── components/
 │   └── lib/
 │       └── drive.ts        ← Wrapper rundt Proton Drive JS SDK
-└── ../sdk/                 ← Proton Drive SDK (cloned, read-only)
-    ├── js/                 ← TypeScript SDK — primær integrasjon
-    ├── cs/                 ← C# SDK (referanse)
-    ├── kt/                 ← Kotlin (referanse)
-    └── swift/              ← Swift (referanse)
+└── vendor/
+    └── sdk/                ← Proton Drive SDK (git submodule, read-only)
+        ├── js/             ← TypeScript SDK — primær integrasjon
+        ├── cs/             ← C# SDK (referanse)
+        ├── kt/             ← Kotlin (referanse)
+        └── swift/          ← Swift (referanse)
 ```
 
 ---
 
 ## SDK-integrasjon
 
-SDKen er klonet til `../sdk` relativt til prosjektroten og skal **ikke** modifiseres.
+SDKen er inkludert som en **git submodule** under `vendor/sdk/` og skal **ikke** modifiseres.
+Klon med `git clone --recurse-submodules`, eller kjør `git submodule update --init --recursive`
+etter en vanlig clone. Bygg SDKen én gang med `cd vendor/sdk/js/sdk && npm install && npm run build`.
 
 ### JS SDK (primær)
-- Plassering: `../sdk/js/`
+- Plassering: `vendor/sdk/js/sdk/`
 - Brukes i React/TypeScript-laget (Tauri WebView)
 - Håndterer all Drive-logikk: kryptering, filopplasting/-nedlasting, mappestruktur
-- Importeres via relativ path eller workspace alias i `tsconfig.json`
+- Referert via `file:./vendor/sdk/js/sdk` i `package.json`
 
 ```jsonc
 // tsconfig.json paths
 {
   "compilerOptions": {
     "paths": {
-      "@proton/sdk/*": ["../sdk/js/*"]
+      "@proton/drive-sdk": ["./vendor/sdk/js/packages/sdk/lib"]
     }
   }
 }

@@ -84,6 +84,7 @@ let _status: SyncStatus = { active: [], errors: [] };
 let _statusCallback: ((s: SyncStatus) => void) | null = null;
 let _lastErrorNotificationMs = 0;
 let _fullSyncInProgress = false;
+let _paused = false;
 const FULL_SYNC_LABEL = "__full_sync__";
 const ERROR_NOTIFY_THROTTLE_MS = 30_000;
 
@@ -104,12 +105,31 @@ function scheduleTrayUpdate(): void {
     _trayUpdateTimer = null;
     const activeItems = _status.active.filter((x) => x !== FULL_SYNC_LABEL);
     invoke("update_tray_status", {
+      paused: _paused,
       syncing: activeItems.length > 0,
       activeCount: activeItems.length,
       recentFiles: _recentlySynced.slice(0, 8),
       errorCount: _status.errors.length,
     }).catch(() => {});
   }, 400);
+}
+
+export function pauseSync(): void {
+  if (_paused) return;
+  _paused = true;
+  scheduleTrayUpdate();
+}
+
+export function resumeSync(): void {
+  if (!_paused) return;
+  _paused = false;
+  // Catch up on any changes made while paused.
+  triggerFullSync().catch(console.error);
+  scheduleTrayUpdate();
+}
+
+export function isSyncPaused(): boolean {
+  return _paused;
 }
 
 export function getSyncStatus(): SyncStatus {
@@ -398,6 +418,10 @@ async function initialSyncLocalFolder(): Promise<void> {
 // ── Local → Remote ───────────────────────────────────────────────────────────
 
 async function handleLocalChange(event: WatchEvent): Promise<void> {
+  if (_paused) {
+    console.log("[sync] paused — ignoring local event for", event.absPath);
+    return;
+  }
   const { absPath, kind } = event;
 
   if (isSuppressed(absPath)) {
@@ -527,24 +551,23 @@ async function handleLocalUpsert(absPath: string, checkStability: boolean): Prom
       return;
     }
 
-    let contentB64: string;
+    // Fetch raw file bytes via pd-file:// to avoid base64 encoding the entire file
+    // over IPC — large files would otherwise OOM the WebView.
+    let blob: Blob;
     try {
-      contentB64 = await invoke<string>("read_local_file", { absPath });
+      const response = await fetch(`pd-file://${absPath}`);
+      if (!response.ok) throw new Error(`pd-file fetch ${response.status}`);
+      blob = await response.blob();
     } catch (err) {
-      console.log("[sync] skipping (unreadable):", absPath, err);
+      console.log("[sync] skipping (unreadable via pd-file://):", absPath, err);
       return;
     }
 
-    const raw = atob(contentB64);
-    const bytes = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-
     const filename = absPath.split("/").pop() ?? absPath;
-    const blob = new Blob([bytes]);
     const file = new File([blob], filename, { lastModified: stat.mtimeMs });
     const metadata = {
       mediaType: "application/octet-stream",
-      expectedSize: bytes.length,
+      expectedSize: blob.size,
       modificationTime: new Date(stat.mtimeMs),
     };
 
@@ -581,7 +604,7 @@ async function handleLocalUpsert(absPath: string, checkStability: boolean): Prom
       localPath: absPath,
       etag: nodeRevisionUid,
       modifiedAt: stat.mtimeMs,
-      sizeBytes: bytes.length,
+      sizeBytes: blob.size,
       syncState: "synced",
     });
 
@@ -602,6 +625,10 @@ async function handleLocalUpsert(absPath: string, checkStability: boolean): Prom
 // ── Remote → Local ───────────────────────────────────────────────────────────
 
 async function handleDriveEvent(event: DriveEvent): Promise<void> {
+  if (_paused) {
+    console.log("[sync] paused — ignoring drive event:", event.type);
+    return;
+  }
   if (
     event.type === DriveEventType.NodeCreated ||
     event.type === DriveEventType.NodeUpdated
@@ -709,29 +736,22 @@ async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
       }
     }
 
+    // Stream chunks directly to disk via write_local_file_chunk to avoid accumulating
+    // the entire file in memory before writing — crucial for large files.
+    suppressPath(expectedPath);
+    await invoke("truncate_local_file", { absPath: expectedPath });
+
     const downloader = await getFileDownloader(nodeUid);
-    const chunks: Uint8Array[] = [];
     const writable = new WritableStream<Uint8Array>({
-      write(chunk) {
-        chunks.push(new Uint8Array(chunk));
+      async write(chunk) {
+        // btoa per chunk (typically 256 KB) is fast and keeps peak memory bounded.
+        let binary = "";
+        for (let i = 0; i < chunk.length; i++) binary += String.fromCharCode(chunk[i]);
+        await invoke("write_local_file_chunk", { absPath: expectedPath, contentB64: btoa(binary) });
       },
     });
     const dlController = downloader.downloadToStream(writable, () => {});
     await dlController.completion();
-
-    const totalLength = chunks.reduce((s, c) => s + c.length, 0);
-    const merged = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      merged.set(chunk, offset);
-      offset += chunk.length;
-    }
-    let binary = "";
-    for (let i = 0; i < merged.length; i++) binary += String.fromCharCode(merged[i]);
-    const b64 = btoa(binary);
-
-    suppressPath(expectedPath);
-    await invoke("write_local_file", { absPath: expectedPath, contentB64: b64 });
     addRecentlySynced(expectedPath, "down");
 
     const revision = node.activeRevision;

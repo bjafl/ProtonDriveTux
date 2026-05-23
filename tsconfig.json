@@ -23,7 +23,7 @@
     "noFallthroughCasesInSwitch": true,
     "paths": {
       "@proton/drive-sdk": [
-        "../sdk/js/packages/sdk/lib"
+        "./vendor/sdk/js/packages/sdk/lib"
       ]
     }
   },

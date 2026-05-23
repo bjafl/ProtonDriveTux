@@ -180,6 +180,14 @@ impl Db {
         )?;
         Ok(())
     }
+
+    /// Deletes all rows from the `files` table. Used when the sync root changes
+    /// so the new sync session starts with a clean state.
+    pub fn clear_all(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM files", [])?;
+        Ok(())
+    }
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -351,6 +359,36 @@ mod tests {
         db.set_sync_config("key", "second").unwrap();
         let val = db.get_sync_config("key").unwrap();
         assert_eq!(val, Some("second".to_string()));
+    }
+
+    // ── clear_all ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn clear_all_removes_all_file_rows() {
+        let db = make_db();
+        db.upsert_file(&file("r1", "/sync/a.txt")).unwrap();
+        db.upsert_file(&file("r2", "/sync/b.txt")).unwrap();
+        db.clear_all().unwrap();
+        assert!(db.all_files().unwrap().is_empty());
+    }
+
+    #[test]
+    fn clear_all_leaves_sync_config_intact() {
+        let db = make_db();
+        db.upsert_file(&file("r1", "/sync/a.txt")).unwrap();
+        db.set_sync_config("local_root", "/home/user/ProtonDrive").unwrap();
+        db.clear_all().unwrap();
+        assert!(db.all_files().unwrap().is_empty());
+        assert_eq!(
+            db.get_sync_config("local_root").unwrap(),
+            Some("/home/user/ProtonDrive".to_string())
+        );
+    }
+
+    #[test]
+    fn clear_all_on_empty_table_is_ok() {
+        let db = make_db();
+        assert!(db.clear_all().is_ok());
     }
 
     #[test]

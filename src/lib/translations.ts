@@ -85,6 +85,9 @@ export type Translations = {
   // Settings
   changeSyncSettings: string;
   notConfigured: string;
+  // Pause / resume
+  pauseSync: string;
+  resumeSync: string;
 };
 
 export const T: Record<Lang, Translations> = {
@@ -164,6 +167,8 @@ export const T: Record<Lang, Translations> = {
     conflictConfirm: "Bekreft og fortsett",
     changeSyncSettings: "Endre synkinnstillinger",
     notConfigured: "Ikke konfigurert",
+    pauseSync: "Sett på pause",
+    resumeSync: "Gjenoppta",
   },
   en: {
     appName: "Proton Drive Sync",
@@ -241,5 +246,7 @@ export const T: Record<Lang, Translations> = {
     conflictConfirm: "Confirm & continue",
     changeSyncSettings: "Change sync settings",
     notConfigured: "Not configured",
+    pauseSync: "Pause sync",
+    resumeSync: "Resume sync",
   },
 } as const;

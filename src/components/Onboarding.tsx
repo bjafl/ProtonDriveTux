@@ -79,8 +79,11 @@ export function Onboarding({ onComplete }: OnboardingProps) {
 
   async function handleFolderSelectNext() {
     // Save local root to DB (creates dir if needed).
+    // Clear all stale file states first so the new sync session starts clean — without
+    // this, the engine would see old paths as conflicts with the new root's files.
     setSaving(true);
     try {
+      await invoke("clear_all_file_states");
       await invoke("set_local_root", { path: localRoot });
       await invoke("set_db_sync_config", {
         key: "selected_folders",

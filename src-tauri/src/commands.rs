@@ -360,6 +360,33 @@ pub fn write_local_file(abs_path: String, content_b64: String) -> Result<(), Str
     std::fs::write(&abs_path, &bytes).map_err(|e| format!("write {abs_path}: {e}"))
 }
 
+/// Creates (or truncates) a local file, creating parent dirs as needed.
+/// Used to initialise a file before streaming chunks via write_local_file_chunk.
+#[tauri::command]
+pub fn truncate_local_file(abs_path: String) -> Result<(), String> {
+    if let Some(parent) = std::path::Path::new(&abs_path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
+    }
+    std::fs::File::create(&abs_path).map_err(|e| format!("truncate {abs_path}: {e}"))?;
+    Ok(())
+}
+
+/// Decodes a base64 chunk and appends it to an existing file.
+/// Must be called after truncate_local_file to ensure the file exists.
+#[tauri::command]
+pub fn write_local_file_chunk(abs_path: String, content_b64: String) -> Result<(), String> {
+    use std::io::Write;
+    let bytes = STANDARD
+        .decode(&content_b64)
+        .map_err(|e| format!("base64 decode: {e}"))?;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&abs_path)
+        .map_err(|e| format!("open append {abs_path}: {e}"))?;
+    file.write_all(&bytes).map_err(|e| format!("write chunk {abs_path}: {e}"))
+}
+
 /// Moves a local file into `{sync_root}/.trash/` instead of permanently deleting it.
 /// Creates the trash directory as needed. Silently succeeds if the source does not exist.
 #[tauri::command]
@@ -650,6 +677,13 @@ pub fn delete_file_state(remote_id: String, db: State<'_, Db>) -> Result<(), Str
     db.delete_by_remote_id(&remote_id).map_err(|e| e.to_string())
 }
 
+/// Removes all file-state rows. Called when the user changes the sync root so the
+/// new sync session starts with a clean slate instead of treating old paths as conflicts.
+#[tauri::command]
+pub fn clear_all_file_states(db: State<'_, Db>) -> Result<(), String> {
+    db.clear_all().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_home_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "~".into())
@@ -718,6 +752,7 @@ pub struct RecentFile {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrayStatusPayload {
+    pub paused: bool,
     pub syncing: bool,
     pub active_count: usize,
     pub recent_files: Vec<RecentFile>,
@@ -739,7 +774,9 @@ pub fn update_tray_status(
     };
 
     // Build status line text.
-    let status_text = if payload.syncing {
+    let status_text = if payload.paused {
+        "⏸  Synk satt på pause".to_string()
+    } else if payload.syncing {
         format!("↕  Synkroniserer {} element(er)…", payload.active_count)
     } else if payload.error_count > 0 {
         format!("⚠  {} feil", payload.error_count)
@@ -748,7 +785,9 @@ pub fn update_tray_status(
     };
 
     // Tooltip (plain text, no Unicode that causes pango errors on some setups).
-    let tooltip = if payload.syncing {
+    let tooltip = if payload.paused {
+        "Proton Drive Sync — pauset".to_string()
+    } else if payload.syncing {
         format!("Proton Drive Sync — synkroniserer {}", payload.active_count)
     } else if payload.error_count > 0 {
         format!("Proton Drive Sync — {} feil", payload.error_count)
@@ -758,7 +797,9 @@ pub fn update_tray_status(
     tray.set_tooltip(Some(tooltip.as_str())).map_err(|e| e.to_string())?;
 
     // Build tray icon to reflect state.
-    let icon_bytes: &[u8] = if payload.syncing {
+    let icon_bytes: &[u8] = if payload.paused {
+        include_bytes!("../icons/tray-idle.png")
+    } else if payload.syncing {
         include_bytes!("../icons/tray-syncing.png")
     } else if payload.error_count > 0 {
         include_bytes!("../icons/tray-error.png")
@@ -790,6 +831,10 @@ pub fn update_tray_status(
     }
 
     let sep2 = PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?;
+    let pause_label = if payload.paused { "▶  Gjenoppta sync" } else { "⏸  Sett sync på pause" };
+    let pause_id = if payload.paused { "resume" } else { "pause" };
+    let pause_item = MenuItem::with_id(&app, pause_id, pause_label, true, None::<&str>)
+        .map_err(|e| e.to_string())?;
     let show = MenuItem::with_id(&app, "show", "Åpne", true, None::<&str>)
         .map_err(|e| e.to_string())?;
     let quit = MenuItem::with_id(&app, "quit", "Avslutt", true, None::<&str>)
@@ -800,7 +845,7 @@ pub fn update_tray_status(
     for item in &dyn_items {
         refs.push(item.as_ref());
     }
-    refs.extend_from_slice(&[&sep2, &show, &quit]);
+    refs.extend_from_slice(&[&sep2, &pause_item, &show, &quit]);
 
     let menu = Menu::with_items(&app, &refs).map_err(|e| e.to_string())?;
     tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;

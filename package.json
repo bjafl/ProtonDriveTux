@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@protontech/crypto": "^2.0.0",
-    "@protontech/drive-sdk": "file:../sdk/js/sdk",
+    "@protontech/drive-sdk": "file:./vendor/sdk/js/sdk",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-http": "^2.5.9",
     "@tauri-apps/plugin-opener": "^2",

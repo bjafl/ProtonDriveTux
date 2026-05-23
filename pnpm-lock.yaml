@@ -12,8 +12,8 @@ importers:
         specifier: ^2.0.0
         version: 2.0.1(typescript@6.0.3)
       '@protontech/drive-sdk':
-        specifier: file:../sdk/js/sdk
-        version: file:../sdk/js/sdk(@protontech/crypto@2.0.1(typescript@6.0.3))
+        specifier: file:./vendor/sdk/js/sdk
+        version: file:vendor/sdk/js/sdk(@protontech/crypto@2.0.1(typescript@6.0.3))
       '@tauri-apps/api':
         specifier: ^2
         version: 2.11.0
@@ -339,8 +339,8 @@ packages:
   '@protontech/crypto@2.0.1':
     resolution: {integrity: sha512-PMvQi1L98eU9tCVNvoLIEq21Jwfs2a4LxJwoEVbEIhvZVVprCf4lRrwqce2HhPmyjQuQJDcSlqbma+o++G2LEw==}
 
-  '@protontech/drive-sdk@file:../sdk/js/sdk':
-    resolution: {directory: ../sdk/js/sdk, type: directory}
+  '@protontech/drive-sdk@file:vendor/sdk/js/sdk':
+    resolution: {directory: vendor/sdk/js/sdk, type: directory}
     peerDependencies:
       '@protontech/crypto': ^2.0.0
 
@@ -1228,7 +1228,7 @@ snapshots:
       - '@types/node'
       - typescript
 
-  '@protontech/drive-sdk@file:../sdk/js/sdk(@protontech/crypto@2.0.1(typescript@6.0.3))':
+  '@protontech/drive-sdk@file:vendor/sdk/js/sdk(@protontech/crypto@2.0.1(typescript@6.0.3))':
     dependencies:
       '@noble/hashes': 1.8.0
       '@protontech/crypto': 2.0.1(typescript@6.0.3)

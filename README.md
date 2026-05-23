@@ -11,24 +11,32 @@ is handled entirely by Proton's code.
 
 ## Status
 
-Working prototype. The core sync loop runs but has known gaps — see [PLAN.md](PLAN.md).
+Working prototype. The core sync loop is complete — see [PLAN.md](PLAN.md) for the
+remaining AppImage build verification task.
 
 | Feature | State |
 |---------|-------|
 | Login (SRP + 2FA) | ✅ |
 | Session restore from keyring | ✅ |
 | Onboarding: pick local folder + Drive folders | ✅ |
+| Root-folder sync mode (none / files only / recursive) | ✅ |
 | Conflict resolution wizard | ✅ |
 | Upload new files | ✅ |
 | Upload modified files (revisions) | ✅ |
 | Download new/changed Drive files | ✅ |
 | Remote rename/move → local rename | ✅ |
+| Local deletes → Drive (permanent trash) | ✅ |
+| Remote deletes → local delete | ✅ |
 | Token refresh on 401 | ✅ |
-| System tray, autostart | ✅ |
-| Recursive folder sync on cold start | ✅ |
-| Local deletes → Drive (trash) | ✅ |
 | Watcher stop/restart on path change | ✅ |
-| Large file streaming | ❌ full base64 round-trip ([G2](PLAN.md)) |
+| DB cleared when sync root changes | ✅ |
+| Recursive folder sync on cold start | ✅ |
+| Full reconciliation (periodic + manual "Sync now") | ✅ |
+| Sync pause / resume (button + tray) | ✅ |
+| Large file streaming (no base64 round-trip) | ✅ |
+| System tray with sync state + recent files | ✅ |
+| Desktop notifications (sync + errors) | ✅ |
+| Autostart on login | ✅ |
 
 ---
 
@@ -62,18 +70,21 @@ curl https://sh.rustup.rs -sSf | sh
 npm install -g pnpm
 ```
 
-**Proton Drive SDK** — clone alongside this repo:
-
-```bash
-git clone https://github.com/ProtonDriveApps/sdk.git ../sdk
-cd ../sdk/js/sdk && npm install && npm run build
-```
-
 ---
 
 ## Development
 
 ```bash
+# Clone with submodules (includes the Proton Drive SDK)
+git clone --recurse-submodules <repo-url>
+cd proton-drive-linux-sync
+
+# If you already cloned without --recurse-submodules:
+git submodule update --init --recursive
+
+# Build the SDK (required once, and again after `git submodule update`)
+cd vendor/sdk/js/sdk && npm install && npm run build && cd ../../../..
+
 pnpm install
 cargo tauri dev
 ```
@@ -127,13 +138,15 @@ Produces an AppImage in `src-tauri/target/release/bundle/appimage/`.
 ```
 
 **Local → Drive:** inotify fires → 300 ms debounce → stability check (wait for
-write to finish) → read file → SDK encrypts + uploads → SQLite updated.
+write to finish) → `pd-file://` fetch raw bytes → SDK encrypts + uploads → SQLite updated.
 
 **Drive → local:** SDK Drive event subscription → compare revision ID against
-SQLite → download + decrypt → write to local path → SQLite updated.
+SQLite → download + decrypt → stream chunks to disk → SQLite updated.
 
 Anti-loop: files written locally by a Drive download are suppressed from
-re-upload for 5 seconds.
+re-upload for 5 seconds. Large files never buffer entirely in memory — uploads
+fetch bytes via a custom `pd-file://` URI scheme, downloads write each chunk
+directly to disk via append-mode IPC commands.
 
 Authentication uses SRP (Secure Remote Password) — the password never leaves
 your machine. Session tokens are stored in GNOME Keyring, not on disk.
@@ -152,10 +165,10 @@ your machine. Session tokens are stored in GNOME Keyring, not on disk.
 
 ## Known limitations
 
-- **Local deletes move files to Drive trash** (not permanent delete).
-- **No streaming for large files** — files are buffered in full through IPC.
-- **System tray requires** `gnome-shell-extension-appindicator` on GNOME Shell.
+- **System tray requires** `gnome-shell-extension-appindicator` on GNOME Shell
+  (installed by default on Ubuntu 22.04+).
 - **Single account only** — no multi-account support.
+- **AppImage not yet verified** on a clean build machine — see [PLAN.md](PLAN.md) 4.3.
 - Proton's SDK has a breaking crypto change coming (ETA late 2026). All SDK calls
   are isolated in `src/lib/drive.ts` to minimise the migration surface.
 

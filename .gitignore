@@ -12,6 +12,13 @@ dist
 dist-ssr
 *.local
 
+# SDK submodule build artefacts — vendor/sdk itself is tracked as a submodule,
+# but its build output and own node_modules are not.
+vendor/sdk/js/sdk/dist/
+vendor/sdk/js/sdk/node_modules/
+vendor/sdk/js/sdk/tsconfig.tsbuildinfo
+coverage/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

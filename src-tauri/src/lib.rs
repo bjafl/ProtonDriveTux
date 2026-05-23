@@ -5,15 +5,16 @@ mod keyring;
 mod watcher;
 
 use commands::{
-    AppState, close_captcha_window, delete_file_state, delete_local_dir, delete_local_file,
-    disable_autostart, enable_autostart, ensure_local_dir, get_all_file_states, get_auth_status,
-    get_autostart_enabled, get_db_sync_config, get_file_state_by_local_path,
+    AppState, clear_all_file_states, close_captcha_window, delete_file_state, delete_local_dir,
+    delete_local_file, disable_autostart, enable_autostart, ensure_local_dir, get_all_file_states,
+    get_auth_status, get_autostart_enabled, get_db_sync_config, get_file_state_by_local_path,
     get_file_state_by_remote_id, get_home_dir, get_key_password, get_local_root,
     get_session_tokens, list_dir_recursive, list_local_dir, logout, open_captcha_window,
     read_local_file, rename_local_file, restore_session_from_keyring, set_db_sync_config,
     set_file_sync_state, set_local_root, show_notification, start_file_watcher, stat_local_file,
-    stop_file_watcher, store_key_password, store_tokens, trash_local_file, update_tray_status,
-    upsert_file_state, validate_local_root, write_local_file,
+    stop_file_watcher, store_key_password, store_tokens, trash_local_file, truncate_local_file,
+    update_tray_status, upsert_file_state, validate_local_root, write_local_file,
+    write_local_file_chunk,
 };
 use db::Db;
 use tauri::{
@@ -34,6 +35,25 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .manage(AppState::new())
+        // pd-file:// serves raw file bytes to the WebView without base64 encoding, used by
+        // the upload path in sync.ts to avoid the O(n) IPC+base64 memory spike.
+        // URI form: pd-file:///abs/path/to/file — path() gives /abs/path/to/file.
+        .register_uri_scheme_protocol("pd-file", |_app, request| {
+            let path = request.uri().path().to_string();
+            match std::fs::read(&path) {
+                Ok(bytes) => tauri::http::Response::builder()
+                    .status(200)
+                    .header("Content-Type", "application/octet-stream")
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(bytes)
+                    .unwrap(),
+                Err(_) => tauri::http::Response::builder()
+                    .status(404)
+                    .header("Content-Type", "text/plain")
+                    .body(b"not found".to_vec())
+                    .unwrap(),
+            }
+        })
         // pd-captcha:// is a custom scheme used to relay the solved captcha token from the
         // captcha WebView back to the main app without using Tauri IPC (which is blocked by
         // verify.proton.me's connect-src CSP). Registering the scheme tells WebKit2GTK it is
@@ -119,8 +139,11 @@ pub fn run() {
             start_file_watcher,
             stop_file_watcher,
             delete_file_state,
+            clear_all_file_states,
             delete_local_dir,
             ensure_local_dir,
+            truncate_local_file,
+            write_local_file_chunk,
             update_tray_status,
         ])
         .run(tauri::generate_context!())
@@ -148,6 +171,10 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
+            }
+            "pause" | "resume" => {
+                // Tell the frontend to toggle pause state; it owns the sync engine.
+                let _ = app.emit("sync://pause-toggle", ());
             }
             "quit" => app.exit(0),
             _ => {}

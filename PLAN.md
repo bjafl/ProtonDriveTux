@@ -1,6 +1,6 @@
 # PLAN — Proton Drive Linux Sync Client
 
-*Updated: 2026-05-22*
+*Updated: 2026-05-23*
 
 ---
 
@@ -11,12 +11,15 @@
 | 0 | Tauri shell: tray, inotify, config | ✅ Done |
 | 1 | SRP login + GNOME Keyring | ✅ Done |
 | 2 | JS SDK integrated, file transfer | ✅ Done (except 2.6) |
-| 3 | Bidirectional sync engine | 🔄 In progress — core works, gaps below |
-| 4 | UI polish, notifications, autostart, AppImage | 🔄 Partial |
+| 3 | Bidirectional sync engine | ✅ Done — all known gaps fixed |
+| 4 | UI polish, notifications, autostart, AppImage | 🔄 Partial — AppImage build pending |
 
-What exists: login, unlock, onboarding, folder selection, conflict wizard,
-bidirectional sync with inotify + Drive events, token refresh, file revisions,
-rename handling, write-stability check, trash-based deletes, SQLite state.
+What exists: login, unlock, onboarding (with root-mode selector), folder selection,
+conflict wizard, bidirectional sync with inotify + Drive events, token refresh,
+file revisions, rename handling, write-stability check, permanent deletes propagated
+to Drive, watcher handoff on root change, sync pause/resume, large file streaming,
+Nextcloud-style tray menu with sync state + recently synced files, SQLite state,
+desktop notifications, autostart.
 
 ---
 
@@ -31,20 +34,17 @@ rename handling, write-stability check, trash-based deletes, SQLite state.
 
 ---
 
-### G2. Large file memory: full base64 round-trip
+### G2. Large file memory: full base64 round-trip ✅ Fixed
 
-**Where:** `src/lib/sync.ts` → `handleLocalUpsert`,
-`src-tauri/src/commands.rs` → `read_local_file` / `write_local_file`  
-**Problem:** `read_local_file` reads the whole file into RAM as bytes, base64-encodes
-it, returns a string across IPC; JS decodes with `atob()` into a second buffer.
-A 500 MB file doubles its footprint twice. SDK uploaders support `File` objects
-which the browser can stream from a URL/blob.  
-**Fix (MVP):** Add a `read_local_file_chunked(abs_path, offset, len)` command and
-stream chunks into a `ReadableStream` fed to the SDK uploader, or use
-`tauri://localhost/...` asset protocol to serve local files directly as a URL.  
-**Fix (stretch):** Register a custom Tauri protocol handler `pd-file://` that
-streams file bytes on demand — the SDK uploader receives a URL and streams without
-buffering.
+**Where:** `src/lib/sync.ts` → `handleLocalUpsert` / `handleRemoteNodeUpdate`  
+**Fix applied:**
+- **Upload:** Registered `pd-file://` custom URI scheme in `lib.rs`. The Rust handler
+  serves raw file bytes on demand; `handleLocalUpsert` now does
+  `fetch("pd-file:///abs/path") → blob() → File` — no base64, no IPC copy.
+- **Download:** Added `truncate_local_file` (creates/clears the file) and
+  `write_local_file_chunk` (append mode) Rust commands. `handleRemoteNodeUpdate` now
+  writes each SDK chunk to disk as it arrives via a `WritableStream` sink instead of
+  accumulating all chunks before encoding.
 
 ---
 
@@ -70,10 +70,11 @@ the DB row via new `delete_file_state` Rust command.
 
 ### Phase 3 — remaining
 
-**3.1 Sync pause / resume**  
-Add a stop-sync path: unsubscribe from Drive events, stop the local watcher,
-set a `paused` flag so inotify events are dropped. Resume: restart watcher + resubscribe.
-Expose `pause_sync` / `resume_sync` Tauri commands. Show pause/resume button in MainView.
+**3.1 Sync pause / resume** ✅ Fixed  
+`_paused` flag in `sync.ts` guards both `handleLocalChange` and `handleDriveEvent`.
+`pauseSync()` / `resumeSync()` / `isSyncPaused()` exported. Resume triggers a full
+reconciliation to catch changes made while paused. Tray menu has a dynamic Pause/Resume
+item (Rust emits `sync://pause-toggle`); MainView status card has a matching button.
 
 ---
 
@@ -83,10 +84,10 @@ Expose `pause_sync` / `resume_sync` Tauri commands. Show pause/resume button in 
 `src/App.tsx` now reads `selected_folders` from DB on init and displays the folder
 names joined by ", " in the sync-path row.
 
-**4.2 Watcher handoff when sync root changes**  
-"Change sync settings" re-runs onboarding. When the user saves a new local root,
-stop the watcher on the old path (see G3), start it on the new path, and clear
-the `files` DB table so initial sync re-discovers everything.
+**4.2 Watcher handoff when sync root changes** ✅ Fixed  
+`Onboarding.tsx` `handleFolderSelectNext` now calls `clear_all_file_states` before
+saving the new root, ensuring the `files` DB table is clean so the new sync session
+starts without false conflicts. `Db::clear_all()` added to `db.rs`.
 
 **4.3 AppImage build verification**  
 Run `cargo tauri build` end-to-end on a clean Ubuntu 22.04 machine or container.

@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { LoginForm } from "./components/LoginForm";
 import { Onboarding, isOnboardingNeeded } from "./components/Onboarding";
 import { initDriveClient, deriveKeyPassword, refreshTokens, releaseDriveClient, setSessionExpiredCallback } from "./lib/drive";
-import { startSync, setSyncStatusCallback, triggerFullSync } from "./lib/sync";
+import { startSync, setSyncStatusCallback, triggerFullSync, pauseSync, resumeSync, isSyncPaused } from "./lib/sync";
 import { defaultSyncPath } from "./lib/paths";
 import type { SyncStatus } from "./lib/sync";
 import { useLang } from "./lib/i18n";
@@ -189,6 +189,7 @@ function MainView({
   const [autostartEnabled, setAutostartEnabled] = useState<boolean>(false);
   const [autostartLoading, setAutostartLoading] = useState(false);
   const [syncingFull, setSyncingFull] = useState(false);
+  const [syncPaused, setSyncPaused] = useState(false);
   const stopSyncRef = useRef<(() => void) | null>(null);
   const { t, toggleLang } = useLang();
   const { theme, toggleTheme } = useTheme();
@@ -217,6 +218,7 @@ function MainView({
   useEffect(() => {
     let cancelled = false;
     let unlistenLocal: (() => void) | null = null;
+    let unlistenPauseTray: (() => void) | null = null;
     let pollInterval: ReturnType<typeof setInterval> | null = null;
 
     // Wire up session-expired callback so a dead refresh token triggers re-login.
@@ -252,6 +254,17 @@ function MainView({
       if (cancelled) { stop(); return; }
       stopSyncRef.current = stop;
 
+      unlistenPauseTray = await listen("sync://pause-toggle", () => {
+        if (cancelled) return;
+        if (isSyncPaused()) {
+          resumeSync();
+          setSyncPaused(false);
+        } else {
+          pauseSync();
+          setSyncPaused(true);
+        }
+      });
+
       unlistenLocal = await listen<WatchEvent>("sync://local-change", (e) => {
         if (cancelled) return;
         setLocalEvents((prev) =>
@@ -280,6 +293,7 @@ function MainView({
     return () => {
       cancelled = true;
       setSessionExpiredCallback(null);
+      unlistenPauseTray?.();
       unlistenLocal?.();
       if (pollInterval !== null) clearInterval(pollInterval);
       stopSyncRef.current?.();
@@ -317,21 +331,36 @@ function MainView({
 
       <div className="status-card">
         <div className="status-row">
-          <span className={`status-dot ${syncStatus.active.length > 0 ? "running" : ""}`} />
+          <span className={`status-dot ${!syncPaused && syncStatus.active.length > 0 ? "running" : ""}`} />
           <span>
-            {syncStatus.active.length > 0
+            {syncPaused
+              ? "⏸ " + t.pauseSync
+              : syncStatus.active.length > 0
               ? t.syncingItems(syncStatus.active.length)
               : t.syncIdle}
           </span>
-          <button
-            className="back-btn"
-            style={{ marginLeft: "auto", fontSize: "0.8rem" }}
-            onClick={handleFullSync}
-            disabled={syncingFull || syncStatus.active.length > 0}
-            title={t.syncNow}
-          >
-            {syncingFull ? "⟳" : "↺"} {t.syncNow}
-          </button>
+          <div style={{ display: "flex", gap: "0.4rem", marginLeft: "auto" }}>
+            <button
+              className="back-btn"
+              style={{ fontSize: "0.8rem" }}
+              onClick={() => {
+                if (syncPaused) { resumeSync(); setSyncPaused(false); }
+                else { pauseSync(); setSyncPaused(true); }
+              }}
+              title={syncPaused ? t.resumeSync : t.pauseSync}
+            >
+              {syncPaused ? "▶" : "⏸"} {syncPaused ? t.resumeSync : t.pauseSync}
+            </button>
+            <button
+              className="back-btn"
+              style={{ fontSize: "0.8rem" }}
+              onClick={handleFullSync}
+              disabled={syncingFull || syncStatus.active.length > 0 || syncPaused}
+              title={t.syncNow}
+            >
+              {syncingFull ? "⟳" : "↺"} {t.syncNow}
+            </button>
+          </div>
         </div>
         <div className="sync-path">
           {t.localFolder} <code>{syncPath || t.loading}</code>
