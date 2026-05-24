@@ -5,6 +5,7 @@ import {
   handleLocalChange,
   handleLocalUpsert,
   handleRemoteDelete,
+  handleRemoteNodeUpdate,
   _resetSyncStateForTesting,
   _setWatchedFoldersForTesting,
   pauseSync,
@@ -39,7 +40,7 @@ import {
   getFileUploader,
   getFileRevisionUploader,
   getNode,
-  streamDownloadToPath as _streamDownloadToPath, // imported for Task 8 (handleRemoteCreate tests)
+  streamDownloadToPath,
 } from "../lib/drive";
 import { NodeType } from "@protontech/drive-sdk";
 
@@ -375,5 +376,117 @@ describe("handleRemoteDelete", () => {
 
     expect(getNode).toHaveBeenCalledWith("unknown-dir");
     expect(deletedDirs).toContain(`${ROOT}/discovered`);
+  });
+});
+
+// ── handleRemoteNodeUpdate ────────────────────────────────────────────────────
+
+describe("handleRemoteNodeUpdate", () => {
+  it("skips node whose parentUid is not in watchedFolderUids", async () => {
+    vi.mocked(getNode).mockResolvedValue({
+      ok: true,
+      value: {
+        uid: "node-1",
+        name: "file.txt",
+        type: NodeType.File,
+        parentUid: "unknown-folder",
+        activeRevision: { uid: "rev-1", claimedSize: 100 },
+        modificationTime: new Date(1000),
+      },
+    } as never);
+
+    await handleRemoteNodeUpdate("node-1");
+
+    expect(streamDownloadToPath).not.toHaveBeenCalled();
+  });
+
+  it("skips download when revision matches existing DB entry", async () => {
+    vi.mocked(getNode).mockResolvedValue({
+      ok: true,
+      value: {
+        uid: "node-1",
+        name: "file.txt",
+        type: NodeType.File,
+        parentUid: FOLDER_UID,
+        activeRevision: { uid: "rev-1", claimedSize: 100 },
+        modificationTime: new Date(1000),
+      },
+    } as never);
+    setupIpcMocks({
+      get_file_state_by_remote_id: () => ({
+        remoteId: "node-1",
+        localPath: `${ROOT}/file.txt`,
+        etag: "rev-1",
+        modifiedAt: 1000,
+        sizeBytes: 100,
+        syncState: "synced",
+      }),
+    });
+
+    await handleRemoteNodeUpdate("node-1");
+
+    expect(streamDownloadToPath).not.toHaveBeenCalled();
+  });
+
+  it("downloads file when revision differs from DB", async () => {
+    vi.mocked(getNode).mockResolvedValue({
+      ok: true,
+      value: {
+        uid: "node-1",
+        name: "file.txt",
+        type: NodeType.File,
+        parentUid: FOLDER_UID,
+        activeRevision: { uid: "rev-2", claimedSize: 200 },
+        modificationTime: new Date(2000),
+      },
+    } as never);
+    vi.mocked(streamDownloadToPath).mockResolvedValue(undefined);
+    setupIpcMocks({
+      get_file_state_by_remote_id: () => ({
+        remoteId: "node-1",
+        localPath: `${ROOT}/file.txt`,
+        etag: "rev-1",
+        modifiedAt: 1000,
+        sizeBytes: 100,
+        syncState: "synced",
+      }),
+      upsert_file_state: () => null,
+      show_notification: () => null,
+    });
+
+    await handleRemoteNodeUpdate("node-1");
+
+    expect(streamDownloadToPath).toHaveBeenCalledWith(
+      "node-1",
+      `${ROOT}/file.txt`,
+      expect.any(Function),
+    );
+  });
+
+  it("creates local directory for Folder nodes", async () => {
+    vi.mocked(getNode).mockResolvedValue({
+      ok: true,
+      value: {
+        uid: "folder-node",
+        name: "subdir",
+        type: NodeType.Folder,
+        parentUid: FOLDER_UID,
+        activeRevision: null,
+        modificationTime: new Date(),
+      },
+    } as never);
+
+    const ensuredDirs: string[] = [];
+    setupIpcMocks({
+      get_file_state_by_remote_id: () => null,
+      ensure_local_dir: ({ absPath }) => {
+        ensuredDirs.push(absPath as string);
+        return null;
+      },
+    });
+
+    await handleRemoteNodeUpdate("folder-node");
+
+    expect(ensuredDirs).toEqual([`${ROOT}/subdir`]);
   });
 });
