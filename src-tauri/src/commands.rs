@@ -34,6 +34,54 @@ impl From<&str> for CommandError {
     }
 }
 
+// ── Path safety helpers ───────────────────────────────────────────────────────
+
+/// Resolves `path` to a canonical, symlink-free form.
+/// If the path does not yet exist (e.g. a `.pd-tmp` file about to be created),
+/// canonicalises the parent directory and appends the filename component instead.
+fn canonical(path: &str) -> Result<std::path::PathBuf, CommandError> {
+    let p = std::path::Path::new(path);
+    if p.exists() {
+        return std::fs::canonicalize(p)
+            .map_err(|e| CommandError::Other(format!("canonicalize {path}: {e}")));
+    }
+    let parent = p
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .ok_or_else(|| CommandError::Other(format!("no parent directory for {path}")))?;
+    let name = p
+        .file_name()
+        .ok_or_else(|| CommandError::Other(format!("no filename in {path}")))?;
+    let canon_parent = std::fs::canonicalize(parent)
+        .map_err(|e| CommandError::Other(format!("canonicalize parent of {path}: {e}")))?;
+    Ok(canon_parent.join(name))
+}
+
+/// Returns `Ok(())` when `abs_path` is inside the configured sync root.
+/// Prevents JS (or a compromised SDK submodule) from touching arbitrary filesystem paths.
+fn within_sync_root(abs_path: &str, db: &Db) -> Result<(), CommandError> {
+    let root = db
+        .get_sync_config("local_root")?
+        .ok_or_else(|| CommandError::Other("sync root not configured".into()))?;
+    let canon_root = std::fs::canonicalize(&root)
+        .map_err(|e| CommandError::Other(format!("canonicalize sync root: {e}")))?;
+    if !canonical(abs_path)?.starts_with(&canon_root) {
+        return Err(CommandError::Other(format!("path outside sync root: {abs_path}")));
+    }
+    Ok(())
+}
+
+/// Creates all parent directories of `abs_path` if they do not already exist.
+fn ensure_parent(abs_path: &str) -> Result<(), CommandError> {
+    if let Some(parent) = std::path::Path::new(abs_path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| CommandError::Other(format!("create_dir_all {}: {e}", parent.display())))?;
+        }
+    }
+    Ok(())
+}
+
 pub struct AppState {
     pub session: Mutex<Option<AuthSession>>,
     pub watcher_stop: Mutex<Option<Arc<AtomicBool>>>,
@@ -116,7 +164,7 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), CommandError> {
         let base_url = std::env::var("PROTON_API_BASE")
             .unwrap_or_else(|_| "https://mail.proton.me/api".to_string());
         let app_version = std::env::var("PROTON_APP_VERSION")
-            .unwrap_or_else(|_| "external-drive-protondrive@0.1.0-alpha".to_string());
+            .unwrap_or_else(|_| "external-drive-protondrive-linux@0.1.0-alpha".to_string());
 
         if let Ok(auth) = ProtonAuth::new(&base_url, &app_version) {
             let _ = auth.logout(s).await; // best-effort
@@ -359,7 +407,8 @@ pub fn set_db_sync_config(
 
 /// Creates the directory at abs_path (including parents) if it doesn't already exist.
 #[tauri::command]
-pub fn ensure_local_dir(abs_path: String) -> Result<(), CommandError> {
+pub fn ensure_local_dir(abs_path: String, db: State<'_, Db>) -> Result<(), CommandError> {
+    within_sync_root(&abs_path, &db)?;
     std::fs::create_dir_all(&abs_path)
         .map_err(|e| format!("create_dir_all {abs_path}: {e}"))
         .map_err(Into::into)
@@ -386,29 +435,29 @@ pub fn read_local_file(abs_path: String) -> Result<String, CommandError> {
     Ok(STANDARD.encode(&bytes))
 }
 
-/// Decodes a base64 string and writes it to a local file, creating parent dirs as needed.
-#[tauri::command]
-pub fn write_local_file(abs_path: String, content_b64: String) -> Result<(), CommandError> {
+fn do_write_local_file(abs_path: &str, content_b64: &str) -> Result<(), CommandError> {
     let bytes = STANDARD
-        .decode(&content_b64)
+        .decode(content_b64)
         .map_err(|e| format!("base64 decode: {e}"))?;
-    if let Some(parent) = std::path::Path::new(&abs_path).parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
-    }
-    std::fs::write(&abs_path, &bytes)
+    ensure_parent(abs_path)?;
+    std::fs::write(abs_path, &bytes)
         .map_err(|e| format!("write {abs_path}: {e}"))
         .map_err(Into::into)
+}
+
+/// Decodes a base64 string and writes it to a local file, creating parent dirs as needed.
+#[tauri::command]
+pub fn write_local_file(abs_path: String, content_b64: String, db: State<'_, Db>) -> Result<(), CommandError> {
+    within_sync_root(&abs_path, &db)?;
+    do_write_local_file(&abs_path, &content_b64)
 }
 
 /// Creates (or truncates) a local file, creating parent dirs as needed.
 /// Used to initialise a file before streaming chunks via write_local_file_chunk.
 #[tauri::command]
-pub fn truncate_local_file(abs_path: String) -> Result<(), CommandError> {
-    if let Some(parent) = std::path::Path::new(&abs_path).parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
-    }
+pub fn truncate_local_file(abs_path: String, db: State<'_, Db>) -> Result<(), CommandError> {
+    within_sync_root(&abs_path, &db)?;
+    ensure_parent(&abs_path)?;
     std::fs::File::create(&abs_path).map_err(|e| format!("truncate {abs_path}: {e}"))?;
     Ok(())
 }
@@ -416,7 +465,8 @@ pub fn truncate_local_file(abs_path: String) -> Result<(), CommandError> {
 /// Decodes a base64 chunk and appends it to an existing file.
 /// Must be called after truncate_local_file to ensure the file exists.
 #[tauri::command]
-pub fn write_local_file_chunk(abs_path: String, content_b64: String) -> Result<(), CommandError> {
+pub fn write_local_file_chunk(abs_path: String, content_b64: String, db: State<'_, Db>) -> Result<(), CommandError> {
+    within_sync_root(&abs_path, &db)?;
     use std::io::Write;
     let bytes = STANDARD
         .decode(&content_b64)
@@ -430,18 +480,19 @@ pub fn write_local_file_chunk(abs_path: String, content_b64: String) -> Result<(
         .map_err(Into::into)
 }
 
-/// Moves a local file into `{sync_root}/.trash/` instead of permanently deleting it.
-/// Creates the trash directory as needed. Silently succeeds if the source does not exist.
-#[tauri::command]
-pub fn trash_local_file(abs_path: String, sync_root: String) -> Result<(), CommandError> {
-    let src = std::path::Path::new(&abs_path);
+/// Inner logic for trashing a file; testable without Tauri State.
+fn do_trash(abs_path: &str, sync_root: &str) -> Result<(), CommandError> {
+    let canon_root = std::fs::canonicalize(sync_root)
+        .map_err(|e| CommandError::Other(format!("canonicalize sync root: {e}")))?;
+    if !canonical(abs_path)?.starts_with(&canon_root) {
+        return Err(CommandError::Other(format!("path outside sync root: {abs_path}")));
+    }
+    let src = std::path::Path::new(abs_path);
     if !src.exists() {
         return Ok(());
     }
-    let trash_dir = std::path::Path::new(&sync_root).join(".trash");
-    std::fs::create_dir_all(&trash_dir)
-        .map_err(|e| format!("create trash dir: {e}"))?;
-
+    let trash_dir = std::path::Path::new(sync_root).join(".trash");
+    std::fs::create_dir_all(&trash_dir).map_err(|e| format!("create trash dir: {e}"))?;
     let filename = src
         .file_name()
         .ok_or_else(|| format!("no filename in {abs_path}"))?;
@@ -450,32 +501,51 @@ pub fn trash_local_file(abs_path: String, sync_root: String) -> Result<(), Comma
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let dest_name = format!("{}.{ts}", filename.to_string_lossy());
-    let dest = trash_dir.join(dest_name);
-
+    let dest = trash_dir.join(format!("{}.{ts}", filename.to_string_lossy()));
     std::fs::rename(src, &dest)
         .map_err(|e| format!("rename {abs_path} → {}: {e}", dest.display()))
         .map_err(Into::into)
 }
 
-/// Deletes a local file. Silently succeeds if the file does not exist.
+/// Moves a local file into `{sync_root}/.trash/` instead of permanently deleting it.
+/// Creates the trash directory as needed. Silently succeeds if the source does not exist.
+/// sync_root is read from the database — it is not a JS parameter.
 #[tauri::command]
-pub fn delete_local_file(abs_path: String) -> Result<(), CommandError> {
-    match std::fs::remove_file(&abs_path) {
+pub fn trash_local_file(abs_path: String, db: State<'_, Db>) -> Result<(), CommandError> {
+    let sync_root = db
+        .get_sync_config("local_root")?
+        .ok_or_else(|| CommandError::Other("sync root not configured".into()))?;
+    do_trash(&abs_path, &sync_root)
+}
+
+fn do_delete_local_file(abs_path: &str) -> Result<(), CommandError> {
+    match std::fs::remove_file(abs_path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("remove_file {abs_path}: {e}").into()),
     }
 }
 
-/// Recursively deletes a local directory. Silently succeeds if the path does not exist.
+/// Deletes a local file. Silently succeeds if the file does not exist.
 #[tauri::command]
-pub fn delete_local_dir(abs_path: String) -> Result<(), CommandError> {
-    match std::fs::remove_dir_all(&abs_path) {
+pub fn delete_local_file(abs_path: String, db: State<'_, Db>) -> Result<(), CommandError> {
+    within_sync_root(&abs_path, &db)?;
+    do_delete_local_file(&abs_path)
+}
+
+fn do_delete_local_dir(abs_path: &str) -> Result<(), CommandError> {
+    match std::fs::remove_dir_all(abs_path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("remove_dir_all {abs_path}: {e}").into()),
     }
+}
+
+/// Recursively deletes a local directory. Silently succeeds if the path does not exist.
+#[tauri::command]
+pub fn delete_local_dir(abs_path: String, db: State<'_, Db>) -> Result<(), CommandError> {
+    within_sync_root(&abs_path, &db)?;
+    do_delete_local_dir(&abs_path)
 }
 
 /// Returns the modification time (in ms since Unix epoch) and size of a local file.
@@ -496,12 +566,18 @@ pub fn stat_local_file(abs_path: String) -> Result<FileStat, CommandError> {
     })
 }
 
-/// Renames (moves) a local file. Fails if the source does not exist.
-#[tauri::command]
-pub fn rename_local_file(from_path: String, to_path: String) -> Result<(), CommandError> {
-    std::fs::rename(&from_path, &to_path)
+fn do_rename_local_file(from_path: &str, to_path: &str) -> Result<(), CommandError> {
+    std::fs::rename(from_path, to_path)
         .map_err(|e| format!("rename {from_path} → {to_path}: {e}"))
         .map_err(Into::into)
+}
+
+/// Renames (moves) a local file. Fails if the source does not exist.
+#[tauri::command]
+pub fn rename_local_file(from_path: String, to_path: String, db: State<'_, Db>) -> Result<(), CommandError> {
+    within_sync_root(&from_path, &db)?;
+    within_sync_root(&to_path, &db)?;
+    do_rename_local_file(&from_path, &to_path)
 }
 
 // ── Local root management ─────────────────────────────────────────────────────
@@ -1097,7 +1173,7 @@ mod tests {
         let original = b"hello world \x00\xff";
         let encoded = base64::engine::general_purpose::STANDARD.encode(original);
 
-        write_local_file(path.clone(), encoded).unwrap();
+        do_write_local_file(&path, &encoded).unwrap();
         let result_b64 = read_local_file(path).unwrap();
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(result_b64)
@@ -1114,7 +1190,7 @@ mod tests {
             .to_string_lossy()
             .into_owned();
         let encoded = base64::engine::general_purpose::STANDARD.encode(b"data");
-        write_local_file(path.clone(), encoded).unwrap();
+        do_write_local_file(&path, &encoded).unwrap();
         assert!(std::path::Path::new(&path).exists());
     }
 
@@ -1127,7 +1203,7 @@ mod tests {
     fn write_local_file_rejects_invalid_base64() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("out.txt").to_string_lossy().into_owned();
-        assert!(write_local_file(path, "not!valid!base64!!!".to_string()).is_err());
+        assert!(do_write_local_file(&path, "not!valid!base64!!!").is_err());
     }
 
     // ── delete_local_file ─────────────────────────────────────────────────────
@@ -1137,13 +1213,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("del.txt");
         fs::write(&path, "bye").unwrap();
-        delete_local_file(path.to_string_lossy().into_owned()).unwrap();
+        do_delete_local_file(&path.to_string_lossy()).unwrap();
         assert!(!path.exists());
     }
 
     #[test]
     fn delete_local_file_succeeds_silently_on_missing() {
-        assert!(delete_local_file("/tmp/proton_test_missing_zzzz.txt".to_string()).is_ok());
+        assert!(do_delete_local_file("/tmp/proton_test_missing_zzzz.txt").is_ok());
     }
 
     // ── delete_local_dir ─────────────────────────────────────────────────────
@@ -1155,13 +1231,13 @@ mod tests {
         fs::create_dir(&target).unwrap();
         fs::create_dir(target.join("child")).unwrap();
         fs::write(target.join("child").join("file.txt"), "data").unwrap();
-        delete_local_dir(target.to_string_lossy().into_owned()).unwrap();
+        do_delete_local_dir(&target.to_string_lossy()).unwrap();
         assert!(!target.exists());
     }
 
     #[test]
     fn delete_local_dir_succeeds_silently_on_missing() {
-        assert!(delete_local_dir("/tmp/proton_test_missing_dir_zzzz".to_string()).is_ok());
+        assert!(do_delete_local_dir("/tmp/proton_test_missing_dir_zzzz").is_ok());
     }
 
     // ── rename_local_file ─────────────────────────────────────────────────────
@@ -1172,11 +1248,7 @@ mod tests {
         let src = dir.path().join("old.txt");
         let dst = dir.path().join("new.txt");
         fs::write(&src, "content").unwrap();
-        rename_local_file(
-            src.to_string_lossy().into_owned(),
-            dst.to_string_lossy().into_owned(),
-        )
-        .unwrap();
+        do_rename_local_file(&src.to_string_lossy(), &dst.to_string_lossy()).unwrap();
         assert!(!src.exists());
         assert!(dst.exists());
     }
@@ -1184,9 +1256,9 @@ mod tests {
     #[test]
     fn rename_local_file_errors_on_missing_source() {
         let dir = TempDir::new().unwrap();
-        assert!(rename_local_file(
-            "/nonexistent/src.txt".to_string(),
-            dir.path().join("dst.txt").to_string_lossy().into_owned(),
+        assert!(do_rename_local_file(
+            "/nonexistent/src.txt",
+            &dir.path().join("dst.txt").to_string_lossy(),
         )
         .is_err());
     }
@@ -1199,9 +1271,9 @@ mod tests {
         let file_path = dir.path().join("important.txt");
         fs::write(&file_path, "data").unwrap();
 
-        trash_local_file(
-            file_path.to_string_lossy().into_owned(),
-            dir.path().to_string_lossy().into_owned(),
+        do_trash(
+            &file_path.to_string_lossy(),
+            &dir.path().to_string_lossy(),
         )
         .unwrap();
 
@@ -1215,11 +1287,9 @@ mod tests {
     #[test]
     fn trash_local_file_succeeds_silently_when_source_missing() {
         let dir = TempDir::new().unwrap();
-        assert!(trash_local_file(
-            "/nonexistent/file.txt".to_string(),
-            dir.path().to_string_lossy().into_owned(),
-        )
-        .is_ok());
+        // Non-existent path, but within the root so the guard passes.
+        let ghost = dir.path().join("ghost.txt");
+        assert!(do_trash(&ghost.to_string_lossy(), &dir.path().to_string_lossy()).is_ok());
     }
 
     // ── stat_local_file ───────────────────────────────────────────────────────
