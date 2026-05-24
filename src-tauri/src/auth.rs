@@ -92,5 +92,10 @@ mod tests {
     fn new_returns_error_for_app_version_with_null_byte() {
         let result = ProtonAuth::new("https://api.proton.me", "version\0null");
         assert!(result.is_err());
+        let msg = result.err().unwrap().to_string();
+        assert!(
+            msg.contains("invalid header characters"),
+            "expected 'invalid header characters' in error, got: {msg}"
+        );
     }
 }
