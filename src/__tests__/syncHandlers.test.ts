@@ -34,10 +34,6 @@ vi.mock("@protontech/drive-sdk", () => ({
 import {
   trashNode,
   findOrCreateFolder,
-  streamDownloadToPath,
-  getNode,
-  getFileUploader,
-  getFileRevisionUploader,
 } from "../lib/drive";
 
 const ROOT = "/home/test/ProtonDrive";
