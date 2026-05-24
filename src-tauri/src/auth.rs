@@ -63,3 +63,34 @@ impl ProtonAuth {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_succeeds_with_valid_app_version() {
+        let result = ProtonAuth::new(
+            "https://api.proton.me",
+            "external-drive-protondrive-linux@0.1.0-alpha",
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn new_returns_error_for_app_version_with_newline() {
+        let result = ProtonAuth::new("https://api.proton.me", "version\nnewline");
+        assert!(result.is_err());
+        let msg = result.err().unwrap().to_string();
+        assert!(
+            msg.contains("invalid header characters"),
+            "expected 'invalid header characters' in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn new_returns_error_for_app_version_with_null_byte() {
+        let result = ProtonAuth::new("https://api.proton.me", "version\0null");
+        assert!(result.is_err());
+    }
+}
