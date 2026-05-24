@@ -249,6 +249,7 @@ describe("handleLocalUpsert", () => {
   });
 
   it("skips upload when waitForFileStable returns null (file disappeared)", async () => {
+    // null on first stat triggers waitForFileStable's fast-exit (no setTimeout delay needed)
     setupIpcMocks({
       stat_local_file: () => null,
     });

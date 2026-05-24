@@ -1,5 +1,4 @@
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks";
-import { vi } from "vitest";
 import type { FileState } from "../../lib/sync";
 
 export type IpcHandler = (payload: Record<string, unknown>) => unknown;
@@ -38,15 +37,3 @@ export function setupIpcMocks(overrides: IpcOverrides = {}): void {
 export function teardownIpcMocks(): void {
   clearMocks();
 }
-
-// Drive SDK vi.fn() stubs — assign to vi.mocked(importedFn) in test files
-export const mockGetNode = vi.fn();
-export const mockGetFileUploader = vi.fn();
-export const mockGetFileRevisionUploader = vi.fn();
-export const mockStreamDownloadToPath = vi.fn();
-export const mockTrashNode = vi.fn();
-export const mockFindOrCreateFolder = vi.fn();
-export const mockListFolderChildren = vi.fn();
-export const mockGetSyncRoot = vi.fn();
-export const mockPersistEventAnchor = vi.fn();
-export const mockSubscribeToTreeEvents = vi.fn();

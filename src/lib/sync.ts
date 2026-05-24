@@ -627,7 +627,7 @@ export async function handleLocalUpsert(absPath: string, checkStability: boolean
 
     invoke("show_notification", {
       title: "Proton Drive Sync",
-      body: `${existing ? "Oppdatert" : "Lastet opp"}: ${filename}`,
+      body: `${existing ? "Updated" : "Uploaded"}: ${filename}`,
     }).catch(() => {});
   } catch (err) {
     console.error("[sync] upload failed for", absPath, err);
@@ -776,7 +776,7 @@ export async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
 
     invoke("show_notification", {
       title: "Proton Drive Sync",
-      body: `Lastet ned: ${node.name}`,
+      body: `Downloaded: ${node.name}`,
     }).catch(() => {});
     console.log("[sync] downloaded remote node:", nodeUid, "→", expectedPath);
   } catch (err) {
