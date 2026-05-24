@@ -441,6 +441,7 @@ describe("handleRemoteNodeUpdate", () => {
       },
     } as never);
     vi.mocked(streamDownloadToPath).mockResolvedValue(undefined);
+    let upsertedState: unknown;
     setupIpcMocks({
       get_file_state_by_remote_id: () => ({
         remoteId: "node-1",
@@ -450,7 +451,7 @@ describe("handleRemoteNodeUpdate", () => {
         sizeBytes: 100,
         syncState: "synced",
       }),
-      upsert_file_state: () => null,
+      upsert_file_state: (args) => { upsertedState = args; return null; },
       show_notification: () => null,
     });
 
@@ -461,6 +462,14 @@ describe("handleRemoteNodeUpdate", () => {
       `${ROOT}/file.txt`,
       expect.any(Function),
     );
+    expect(upsertedState).toMatchObject({
+      remoteId: "node-1",
+      localPath: `${ROOT}/file.txt`,
+      etag: "rev-2",
+      modifiedAt: 2000,
+      sizeBytes: 200,
+      syncState: "synced",
+    });
   });
 
   it("creates local directory for Folder nodes", async () => {
@@ -488,5 +497,37 @@ describe("handleRemoteNodeUpdate", () => {
     await handleRemoteNodeUpdate("folder-node");
 
     expect(ensuredDirs).toEqual([`${ROOT}/subdir`]);
+
+    // Verify the new folder entry was added to watchedFolderUids:
+    // a child file node under "folder-node" should now be processed (not skipped).
+    vi.mocked(getNode).mockResolvedValue({
+      ok: true,
+      value: {
+        uid: "child-file",
+        name: "child.txt",
+        type: NodeType.File,
+        parentUid: "folder-node",
+        activeRevision: { uid: "rev-1", claimedSize: 10 },
+        modificationTime: new Date(1000),
+      },
+    } as never);
+    vi.mocked(streamDownloadToPath).mockResolvedValue(undefined);
+    setupIpcMocks({
+      get_file_state_by_remote_id: () => null,
+      ensure_local_dir: ({ absPath }) => {
+        ensuredDirs.push(absPath as string);
+        return null;
+      },
+      upsert_file_state: () => null,
+      show_notification: () => null,
+    });
+
+    await handleRemoteNodeUpdate("child-file");
+
+    expect(streamDownloadToPath).toHaveBeenCalledWith(
+      "child-file",
+      `${ROOT}/subdir/child.txt`,
+      expect.any(Function),
+    );
   });
 });
