@@ -9,9 +9,9 @@ const LABEL: &str = "Proton Drive Sync — session";
 
 #[derive(Debug, Error)]
 pub enum KeyringError {
-    #[error("Secret Service-feil: {0}")]
+    #[error("Secret Service error: {0}")]
     SecretService(#[from] secret_service::Error),
-    #[error("Serialiseringsfeil: {0}")]
+    #[error("Serialization error: {0}")]
     Serialize(#[from] serde_json::Error),
 }
 

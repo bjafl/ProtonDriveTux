@@ -25,11 +25,6 @@ use tauri::{
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Suppress the one-time deprecation g_warning from libayatana-appindicator3.
-    // The tray-icon crate already links against the GTK3 variant; there is no
-    // glib-only variant supported yet, so the warning cannot be avoided otherwise.
-    #[cfg(target_os = "linux")]
-    commands::suppress_appindicator_warning();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -174,10 +169,10 @@ pub fn run() {
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     // Initial menu: just show/quit; the frontend updates it via update_tray_status.
-    let status = MenuItem::with_id(app, "status", "✓  Synkronisert", false, None::<&str>)?;
+    let status = MenuItem::with_id(app, "status", "✓  Synced", false, None::<&str>)?;
     let sep = tauri::menu::PredefinedMenuItem::separator(app)?;
-    let show = MenuItem::with_id(app, "show", "Åpne", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Avslutt", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "Open", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&status, &sep, &show, &quit])?;
 
     let icon_bytes = include_bytes!("../icons/tray-idle.png");
