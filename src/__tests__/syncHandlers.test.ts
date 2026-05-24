@@ -3,6 +3,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   handleLocalChange,
+  handleLocalUpsert,
   _resetSyncStateForTesting,
   _setWatchedFoldersForTesting,
   pauseSync,
@@ -34,6 +35,8 @@ vi.mock("@protontech/drive-sdk", () => ({
 import {
   trashNode,
   findOrCreateFolder,
+  getFileUploader,
+  getFileRevisionUploader,
 } from "../lib/drive";
 
 const ROOT = "/home/test/ProtonDrive";
@@ -119,5 +122,114 @@ describe("handleLocalChange", () => {
     await handleLocalChange({ absPath: `${ROOT}/newdir`, kind: "create" });
 
     expect(findOrCreateFolder).toHaveBeenCalledWith(FOLDER_UID, "newdir");
+  });
+});
+
+// ── handleLocalUpsert ─────────────────────────────────────────────────────────
+
+describe("handleLocalUpsert", () => {
+  it("skips file not in any watched folder", async () => {
+    const mockFetch = vi.mocked(fetch);
+    await handleLocalUpsert("/home/test/outside-root/file.txt", false);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("skips upload when size and mtime are unchanged", async () => {
+    setupIpcMocks({
+      stat_local_file: () => ({ mtimeMs: 1000, sizeBytes: 100, isDir: false }),
+      get_file_state_by_local_path: () => ({
+        remoteId: "node-1",
+        localPath: `${ROOT}/file.txt`,
+        etag: "rev-1",
+        modifiedAt: 1000,
+        sizeBytes: 100,
+        syncState: "synced",
+      }),
+    });
+    const mockFetch = vi.mocked(fetch);
+    await handleLocalUpsert(`${ROOT}/file.txt`, false);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("calls getFileUploader for a new file (no DB entry) and upserts DB", async () => {
+    const fileBytes = new Blob(["hello"]);
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(fileBytes),
+    } as Response);
+
+    const mockController = {
+      completion: vi.fn().mockResolvedValue({ nodeUid: "new-uid", nodeRevisionUid: "new-rev" }),
+    };
+    vi.mocked(getFileUploader).mockResolvedValue({
+      uploadFromFile: vi.fn().mockResolvedValue(mockController),
+    } as never);
+
+    let upsertedState: unknown;
+    setupIpcMocks({
+      stat_local_file: () => ({ mtimeMs: 2000, sizeBytes: 5, isDir: false }),
+      get_file_state_by_local_path: () => null,
+      upsert_file_state: (args) => {
+        upsertedState = args;
+        return null;
+      },
+      show_notification: () => null,
+    });
+
+    await handleLocalUpsert(`${ROOT}/file.txt`, false);
+
+    expect(getFileUploader).toHaveBeenCalledWith(
+      FOLDER_UID,
+      "file.txt",
+      expect.objectContaining({ mediaType: "text/plain", expectedSize: 5 }),
+    );
+    expect(upsertedState).toMatchObject({
+      remoteId: "new-uid",
+      localPath: `${ROOT}/file.txt`,
+      etag: "new-rev",
+      syncState: "synced",
+    });
+  });
+
+  it("calls getFileRevisionUploader for an existing file", async () => {
+    const fileBytes = new Blob(["updated"]);
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(fileBytes),
+    } as Response);
+
+    const mockController = {
+      completion: vi.fn().mockResolvedValue({ nodeUid: "node-1", nodeRevisionUid: "rev-2" }),
+    };
+    vi.mocked(getFileRevisionUploader).mockResolvedValue({
+      uploadFromFile: vi.fn().mockResolvedValue(mockController),
+    } as never);
+
+    setupIpcMocks({
+      stat_local_file: () => ({ mtimeMs: 3000, sizeBytes: 7, isDir: false }),
+      get_file_state_by_local_path: () => ({
+        remoteId: "node-1",
+        localPath: `${ROOT}/file.txt`,
+        etag: "rev-1",
+        modifiedAt: 1000,
+        sizeBytes: 5,
+        syncState: "synced",
+      }),
+      upsert_file_state: () => null,
+      show_notification: () => null,
+    });
+
+    await handleLocalUpsert(`${ROOT}/file.txt`, false);
+
+    expect(getFileRevisionUploader).toHaveBeenCalledWith("node-1", expect.any(Object));
+  });
+
+  it("skips upload when waitForFileStable returns null (file disappeared)", async () => {
+    setupIpcMocks({
+      stat_local_file: () => null,
+    });
+    const mockFetch = vi.mocked(fetch);
+    await handleLocalUpsert(`${ROOT}/file.txt`, true);
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });
