@@ -293,8 +293,8 @@ describe("handleRemoteDelete", () => {
 
     await handleRemoteDelete("node-1");
 
-    expect(deletedPaths).toContain(`${ROOT}/file.txt`);
-    expect(deletedIds).toContain("node-1");
+    expect(deletedPaths).toEqual([`${ROOT}/file.txt`]);
+    expect(deletedIds).toEqual(["node-1"]);
   });
 
   it("deletes local directory when node is in watchedFolderUids", async () => {
@@ -341,6 +341,11 @@ describe("handleRemoteDelete", () => {
     await handleRemoteDelete(subDirUid);
 
     expect(deletedDirs).toContain(`${ROOT}/subdir`);
+
+    // Verify the entry was removed from the in-memory watched-folder map:
+    // a second call should not trigger delete_local_dir again.
+    await handleRemoteDelete(subDirUid);
+    expect(deletedDirs).toHaveLength(1);
   });
 
   it("resolves unknown node via getNode and deletes inferred local directory", async () => {
