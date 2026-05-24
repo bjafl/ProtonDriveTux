@@ -57,7 +57,6 @@ export interface FileState {
   syncState: string;
 }
 
-
 interface LocalFileEntry {
   relPath: string;
   absPath: string;
