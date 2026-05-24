@@ -21,13 +21,13 @@ import {
   getSyncRoot,
   getFileUploader,
   getFileRevisionUploader,
-  getFileDownloader,
   subscribeToTreeEvents,
   getNode,
   listFolderChildren,
   persistEventAnchor,
   trashNode,
   findOrCreateFolder,
+  streamDownloadToPath,
 } from "./drive";
 import { findWatchedFolderByPath } from "./syncHelpers";
 import type { WatchedFolderEntry, SelectedFolderRecord } from "./syncHelpers";
@@ -184,6 +184,11 @@ function isSuppressed(absPath: string): boolean {
   if (Date.now() < until) return true;
   suppressUntil.delete(absPath);
   return false;
+}
+
+function markUploaded(nodeUid: string): void {
+  recentlyUploaded.add(nodeUid);
+  setTimeout(() => recentlyUploaded.delete(nodeUid), SUPPRESS_MS);
 }
 
 // ── MIME type helper ─────────────────────────────────────────────────────────
@@ -607,8 +612,7 @@ async function handleLocalUpsert(absPath: string, checkStability: boolean): Prom
         const uploader = await getFileRevisionUploader(existing.remoteId, metadata);
         const controller = await uploader.uploadFromFile(file, [], () => {});
         ({ nodeUid, nodeRevisionUid } = await controller.completion());
-        recentlyUploaded.add(nodeUid);
-        setTimeout(() => recentlyUploaded.delete(nodeUid), SUPPRESS_MS);
+        markUploaded(nodeUid);
         console.log("[sync] uploaded revision:", absPath, "→", nodeUid, "rev:", nodeRevisionUid);
       } catch (err) {
         const msg = String(err);
@@ -622,10 +626,7 @@ async function handleLocalUpsert(absPath: string, checkStability: boolean): Prom
       const uploader = await getFileUploader(targetFolderUid, filename, metadata);
       const controller = await uploader.uploadFromFile(file, [], () => {});
       ({ nodeUid, nodeRevisionUid } = await controller.completion());
-
-      recentlyUploaded.add(nodeUid);
-      setTimeout(() => recentlyUploaded.delete(nodeUid), SUPPRESS_MS);
-
+      markUploaded(nodeUid);
       console.log("[sync] uploaded new file:", absPath, "→", nodeUid, "rev:", nodeRevisionUid);
     }
 
@@ -775,31 +776,7 @@ async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
       }
     }
 
-    // Write to a temp path first; rename atomically on success so a failed download
-    // never leaves a zero-byte or partial file at the final path.
-    const tmpPath = expectedPath + ".pd-tmp";
-    await invoke("truncate_local_file", { absPath: tmpPath });
-
-    const downloader = await getFileDownloader(nodeUid);
-    try {
-      const writable = new WritableStream<Uint8Array>({
-        async write(chunk) {
-          // btoa per chunk (typically 256 KB) is fast and keeps peak memory bounded.
-          let binary = "";
-          for (let i = 0; i < chunk.length; i++) binary += String.fromCharCode(chunk[i]);
-          await invoke("write_local_file_chunk", { absPath: tmpPath, contentB64: btoa(binary) });
-        },
-      });
-      const dlController = downloader.downloadToStream(writable, () => {});
-      await dlController.completion();
-    } catch (err) {
-      await invoke("delete_local_file", { absPath: tmpPath }).catch(() => {});
-      throw err;
-    }
-
-    // Suppress the destination before rename so inotify doesn't re-upload the downloaded file.
-    suppressPath(expectedPath);
-    await invoke("rename_local_file", { fromPath: tmpPath, toPath: expectedPath });
+    await streamDownloadToPath(nodeUid, expectedPath, () => suppressPath(expectedPath));
     addRecentlySynced(expectedPath, "down");
 
     const revision = node.activeRevision;

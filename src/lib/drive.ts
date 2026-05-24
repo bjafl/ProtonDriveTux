@@ -237,6 +237,39 @@ export async function trashNode(nodeUid: NodeOrUid): Promise<void> {
   }
 }
 
+/**
+ * Downloads a Drive file and writes it to disk atomically via a .pd-tmp
+ * intermediate file, keeping peak memory bounded to one SDK chunk (~256 KB).
+ *
+ * `onBeforeRename` is called right before the final rename. The sync engine
+ * uses this to suppress the inotify path at the last moment, preventing the
+ * watcher from re-uploading the file. Pass nothing outside the sync engine.
+ */
+export async function streamDownloadToPath(
+  nodeUid: NodeOrUid,
+  absPath: string,
+  onBeforeRename?: () => void,
+): Promise<void> {
+  const tmpPath = `${absPath}.pd-tmp`;
+  await invoke("truncate_local_file", { absPath: tmpPath });
+  const downloader = await getFileDownloader(nodeUid);
+  try {
+    const writable = new WritableStream<Uint8Array>({
+      async write(chunk) {
+        let binary = "";
+        for (let i = 0; i < chunk.length; i++) binary += String.fromCharCode(chunk[i]);
+        await invoke("write_local_file_chunk", { absPath: tmpPath, contentB64: btoa(binary) });
+      },
+    });
+    await downloader.downloadToStream(writable, () => {}).completion();
+  } catch (err) {
+    await invoke("delete_local_file", { absPath: tmpPath }).catch(() => {});
+    throw err;
+  }
+  onBeforeRename?.();
+  await invoke("rename_local_file", { fromPath: tmpPath, toPath: absPath });
+}
+
 export async function createFolder(
   parentNodeUid: NodeOrUid,
   name: string,

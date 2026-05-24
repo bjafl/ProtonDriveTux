@@ -11,7 +11,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { NodeType } from "@protontech/drive-sdk";
-import { listFolderChildren, getFileDownloader } from "../lib/drive";
+import { listFolderChildren, streamDownloadToPath } from "../lib/drive";
 import type { SelectedFolderRecord } from "../lib/sync";
 import { useLang } from "../lib/i18n";
 
@@ -109,7 +109,7 @@ export function ConflictWizard({ localRoot, selectedFolders, onComplete, onBack 
     try {
       for (const conflict of conflicts) {
         if (conflict.resolution === "keepRemote") {
-          await downloadAndWrite(conflict.remote, conflict.local.absPath);
+          await streamDownloadToPath(conflict.remote.uid, conflict.local.absPath);
         }
         // keepLocal: do nothing — local file will be uploaded in initial sync
       }
@@ -289,28 +289,3 @@ async function collectRemoteFiles(
   }
 }
 
-// ── Resolution execution ──────────────────────────────────────────────────────
-
-// Same streaming pattern as handleRemoteNodeUpdate in sync.ts:
-// write chunks directly to a .pd-tmp file, then rename atomically on success.
-// This keeps peak memory bounded to one chunk (~256 KB) and leaves no
-// partial file at the destination if the download fails.
-async function downloadAndWrite(remote: RemoteFile, absPath: string): Promise<void> {
-  const tmpPath = absPath + ".pd-tmp";
-  await invoke("truncate_local_file", { absPath: tmpPath });
-  const downloader = await getFileDownloader(remote.uid);
-  try {
-    const writable = new WritableStream<Uint8Array>({
-      async write(chunk) {
-        let binary = "";
-        for (let i = 0; i < chunk.length; i++) binary += String.fromCharCode(chunk[i]);
-        await invoke("write_local_file_chunk", { absPath: tmpPath, contentB64: btoa(binary) });
-      },
-    });
-    await downloader.downloadToStream(writable, () => {}).completion();
-  } catch (err) {
-    await invoke("delete_local_file", { absPath: tmpPath }).catch(() => {});
-    throw err;
-  }
-  await invoke("rename_local_file", { fromPath: tmpPath, toPath: absPath });
-}
