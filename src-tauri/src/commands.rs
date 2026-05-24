@@ -1510,4 +1510,14 @@ mod tests {
             "expected 'not configured' in error"
         );
     }
+
+    #[test]
+    fn within_sync_root_accepts_nonexistent_file_inside_root() {
+        let dir = TempDir::new().unwrap();
+        let db = make_db_with_root(dir.path().to_str().unwrap());
+        // File does not exist yet — exercises the parent-fallback branch of canonical()
+        let ghost = dir.path().join("new_file.pd-tmp");
+        assert!(!ghost.exists());
+        assert!(within_sync_root(ghost.to_str().unwrap(), &db).is_ok());
+    }
 }
