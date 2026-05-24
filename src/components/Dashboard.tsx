@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { FileState } from "../lib/sync";
 import { useLang } from "../lib/i18n";
 import { useTheme } from "../lib/theme";
 import { useSyncStatus } from "../hooks/useSyncStatus";
+import { useFileStates } from "../hooks/useFileStates";
 
 function syncStateBadge(state: string): { label: string; color: string } {
   switch (state) {
@@ -30,18 +30,11 @@ export function Dashboard({
   onSessionExpired: () => void;
   onOpenOnboarding: () => void;
 }) {
-  const [fileStates, setFileStates] = useState<FileState[]>([]);
+  const { fileStates, refreshFileStates } = useFileStates();
   const [autostartEnabled, setAutostartEnabled] = useState<boolean>(false);
   const [autostartLoading, setAutostartLoading] = useState(false);
   const { t, toggleLang } = useLang();
   const { theme, toggleTheme } = useTheme();
-
-  const refreshFileStates = async () => {
-    try {
-      const files = await invoke<FileState[]>("get_all_file_states");
-      setFileStates(files);
-    } catch { /* ignore */ }
-  };
 
   const {
     syncStatus, syncPaused, syncPath, driveFolders, localEvents, syncingFull,
