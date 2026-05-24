@@ -188,7 +188,6 @@ function markUploaded(nodeUid: string): void {
   setTimeout(() => recentlyUploaded.delete(nodeUid), SUPPRESS_MS);
 }
 
-
 // ── File stability helpers ───────────────────────────────────────────────────
 
 async function statFile(absPath: string): Promise<FileStat | null> {
