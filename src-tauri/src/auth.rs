@@ -5,6 +5,8 @@ use thiserror::Error;
 pub enum AuthError {
     #[error("Network error: {0}")]
     Network(#[from] reqwest::Error),
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
 }
 
 impl Serialize for AuthError {
@@ -34,7 +36,11 @@ impl ProtonAuth {
                 let mut h = reqwest::header::HeaderMap::new();
                 h.insert(
                     "x-pm-appversion",
-                    reqwest::header::HeaderValue::from_str(app_version).unwrap(),
+                    reqwest::header::HeaderValue::from_str(app_version).map_err(|_| {
+                        AuthError::InvalidConfig(format!(
+                            "PROTON_APP_VERSION contains invalid header characters: {app_version:?}"
+                        ))
+                    })?,
                 );
                 h
             })

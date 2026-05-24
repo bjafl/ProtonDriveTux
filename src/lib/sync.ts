@@ -811,7 +811,7 @@ async function handleRemoteDelete(nodeUid: string): Promise<void> {
     if (fileState) {
       suppressPath(fileState.localPath);
       await invoke("delete_local_file", { absPath: fileState.localPath });
-      await invoke("set_file_sync_state", { remoteId: nodeUid, syncState: "deleted" });
+      await invoke("delete_file_state", { remoteId: nodeUid });
       console.log("[sync] deleted local file:", fileState.localPath, "(remote:", nodeUid, ")");
       return;
     }

@@ -502,9 +502,14 @@ fn do_trash(abs_path: &str, sync_root: &str) -> Result<(), CommandError> {
         .unwrap_or_default()
         .as_secs();
     let dest = trash_dir.join(format!("{}.{ts}", filename.to_string_lossy()));
-    std::fs::rename(src, &dest)
-        .map_err(|e| format!("rename {abs_path} → {}: {e}", dest.display()))
-        .map_err(Into::into)
+    match std::fs::rename(src, &dest) {
+        Ok(()) => Ok(()),
+        // Cross-device (e.g. NFS mount): fall back to copy + delete.
+        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => std::fs::copy(src, &dest)
+            .and_then(|_| std::fs::remove_file(src))
+            .map_err(|e2| format!("cross-device trash {abs_path}: {e2}").into()),
+        Err(e) => Err(format!("rename {abs_path} → {}: {e}", dest.display()).into()),
+    }
 }
 
 /// Moves a local file into `{sync_root}/.trash/` instead of permanently deleting it.

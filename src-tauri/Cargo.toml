@@ -32,6 +32,7 @@ serde_json = "1"
 url = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }
 notify-rust = "4"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

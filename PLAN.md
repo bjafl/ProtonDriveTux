@@ -89,6 +89,11 @@ names joined by ", " in the sync-path row.
 saving the new root, ensuring the `files` DB table is clean so the new sync session
 starts without false conflicts. `Db::clear_all()` added to `db.rs`.
 
+**4.5 Captcha dialog UI review**  
+The captcha window works but had minor layout/UX issues at the time it was implemented.
+Review the dialog appearance and flow (`open_captcha_window` in `commands.rs`, captcha step in
+`LoginForm.tsx`) — fix any rough edges before considering the login flow complete.
+
 **4.3 AppImage build verification**  
 Run `cargo tauri build` end-to-end on a clean Ubuntu 22.04 machine or container.
 Document the exact `apt` packages needed: `libwebkit2gtk-4.1-dev`,
@@ -97,6 +102,44 @@ Document the exact `apt` packages needed: `libwebkit2gtk-4.1-dev`,
 **4.4 Desktop notification on sync error** ✅ Fixed  
 `recordError` in `sync.ts` now calls `show_notification` on each error, throttled
 to max 1 notification per 30 s.
+
+---
+
+## Research notes — Nextcloud desktop client
+
+*From analysis of `../desktop` (Nextcloud's official C++/Qt client), 2026-05-23.*
+
+### Tray
+- Rich tray info lives in a **frameless popup window** (QML `ApplicationWindow` with
+  `Qt.FramelessWindowHint`) that pops up relative to the tray icon — not a native menu.
+- The native context menu is minimal (pause/resume, settings, exit); all status/activity is
+  in the popup.
+- Popup auto-hides on focus loss. Activity feed is **lazy-loaded** (fetched only when popup
+  opens, not kept in sync continuously).
+- Geometry is computed carefully to handle tray icon at screen bottom/top/side.
+- On Linux, Qt's `QSystemTrayIcon` handles SNI automatically — no AppIndicator directly.
+
+**Applicable to us:** Our current implementation is context-menu-only. A popup window
+(React webview or separate Tauri window) positioned relative to the tray icon would give
+richer status info. See item 4.6 below.
+
+### Virtual file system (VFS / on-demand sync)
+- **Nextcloud does not use FUSE on Linux.** Placeholders are real 1-byte files on disk.
+- Metadata (size, mtime, etag) stored in Linux extended attributes (`user.nextcloud.*`)
+  and mirrored in SQLite.
+- **On Linux, hydration is not kernel-driven** — the sync engine detects `AlwaysLocal`
+  pin state and downloads on the next sync cycle. There is no transparent on-demand trigger.
+- **Windows gets real on-demand** via the Cloud Filter API (CfApi): the kernel notifies
+  the client when a file is opened, triggering a `HydrationJob`.
+- Architecture is a **plugin/strategy pattern**: abstract `Vfs` base class with per-platform
+  implementations (`VfsXAttr`, `VfsCfApi`, `VfsSuffix`). Maps cleanly to Rust traits.
+
+**Applicable to us (if we ever add VFS):**
+- Realistic Linux path: xattr-based placeholders + per-file pin states + SQLite metadata.
+  Download triggered on next sync cycle, not on file open.
+- True on-demand (file open → download) would require FUSE (`libfuse` + a FUSE filesystem
+  that intercepts `open()` and blocks until download completes). High complexity.
+- Start with xattr/suffix placeholders; defer FUSE to a potential v2.
 
 ---
 
