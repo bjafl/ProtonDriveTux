@@ -8,6 +8,14 @@ use crate::auth::{AuthSession, ProtonAuth};
 use crate::db::{Db, FileState};
 use crate::keyring;
 
+mod guards;
+mod auth;
+mod db;
+mod file;
+mod config;
+mod watcher;
+mod ui;
+
 #[derive(Debug, thiserror::Error)]
 pub enum CommandError {
     #[error(transparent)]
@@ -97,11 +105,11 @@ impl AppState {
             session: Mutex::new(None),
             watcher_stop: Mutex::new(None),
             last_tray_status: Mutex::new(None),
-            icon_idle: tauri::image::Image::from_bytes(include_bytes!("../icons/tray-idle.png"))
+            icon_idle: tauri::image::Image::from_bytes(include_bytes!("../../icons/tray-idle.png"))
                 .expect("tray-idle.png must be a valid PNG"),
-            icon_syncing: tauri::image::Image::from_bytes(include_bytes!("../icons/tray-syncing.png"))
+            icon_syncing: tauri::image::Image::from_bytes(include_bytes!("../../icons/tray-syncing.png"))
                 .expect("tray-syncing.png must be a valid PNG"),
-            icon_error: tauri::image::Image::from_bytes(include_bytes!("../icons/tray-error.png"))
+            icon_error: tauri::image::Image::from_bytes(include_bytes!("../../icons/tray-error.png"))
                 .expect("tray-error.png must be a valid PNG"),
         }
     }
@@ -1024,47 +1032,6 @@ pub fn show_main_window(app: tauri::AppHandle) {
 #[tauri::command]
 pub fn emit_pause_toggle(app: tauri::AppHandle) {
     let _ = app.emit("sync://pause-toggle", ());
-}
-
-// ── GLib warning suppressor ──────────────────────────────────────────────────
-
-/// Silences the one-time deprecation warning that libayatana-appindicator3
-/// emits via g_warning() on initialisation. The tray-icon crate correctly
-/// links against libayatana-appindicator3-1 (GTK3); there is no glib-only
-/// variant supported by tray-icon yet, so this warning cannot be avoided at
-/// the library level.
-#[cfg(target_os = "linux")]
-pub fn suppress_appindicator_warning() {
-    use std::ffi::{c_char, c_uint, c_void};
-
-    #[link(name = "glib-2.0")]
-    extern "C" {
-        fn g_log_set_handler(
-            log_domain: *const c_char,
-            log_levels: c_uint,
-            log_func: unsafe extern "C" fn(*const c_char, c_uint, *const c_char, *mut c_void),
-            user_data: *mut c_void,
-        ) -> c_uint;
-    }
-
-    unsafe extern "C" fn noop(
-        _domain: *const c_char,
-        _level: c_uint,
-        _message: *const c_char,
-        _data: *mut c_void,
-    ) {
-    }
-
-    // G_LOG_LEVEL_WARNING = 1 << 4 = 16
-    let domain = b"libayatana-appindicator\0";
-    unsafe {
-        g_log_set_handler(
-            domain.as_ptr().cast(),
-            16,
-            noop,
-            std::ptr::null_mut(),
-        );
-    }
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
