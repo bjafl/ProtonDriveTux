@@ -414,25 +414,38 @@ pub fn ensure_local_dir(abs_path: String, db: State<'_, Db>) -> Result<(), Comma
         .map_err(Into::into)
 }
 
-/// Lists regular files (non-directories) directly inside abs_path. Returns absolute paths.
-#[tauri::command]
-pub fn list_local_dir(abs_path: String) -> Result<Vec<String>, CommandError> {
-    let entries = std::fs::read_dir(&abs_path)
+fn do_list_local_dir(abs_path: &str) -> Result<Vec<String>, CommandError> {
+    let entries = std::fs::read_dir(abs_path)
         .map_err(|e| format!("read_dir {abs_path}: {e}"))?;
     let mut files = Vec::new();
     for entry in entries.flatten() {
-        if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            files.push(entry.path().to_string_lossy().into_owned());
+        let path = entry.path();
+        if entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+            && path.extension().map_or(true, |e| e != "pd-tmp")
+        {
+            files.push(path.to_string_lossy().into_owned());
         }
     }
     Ok(files)
 }
 
+/// Lists regular files (non-directories) directly inside abs_path. Returns absolute paths.
+#[tauri::command]
+pub fn list_local_dir(abs_path: String, db: State<'_, Db>) -> Result<Vec<String>, CommandError> {
+    within_sync_root(&abs_path, &db)?;
+    do_list_local_dir(&abs_path)
+}
+
+fn do_read_local_file(abs_path: &str) -> Result<String, CommandError> {
+    let bytes = std::fs::read(abs_path).map_err(|e| format!("read {abs_path}: {e}"))?;
+    Ok(STANDARD.encode(&bytes))
+}
+
 /// Reads a local file and returns its contents as a base64-encoded string.
 #[tauri::command]
-pub fn read_local_file(abs_path: String) -> Result<String, CommandError> {
-    let bytes = std::fs::read(&abs_path).map_err(|e| format!("read {abs_path}: {e}"))?;
-    Ok(STANDARD.encode(&bytes))
+pub fn read_local_file(abs_path: String, db: State<'_, Db>) -> Result<String, CommandError> {
+    within_sync_root(&abs_path, &db)?;
+    do_read_local_file(&abs_path)
 }
 
 fn do_write_local_file(abs_path: &str, content_b64: &str) -> Result<(), CommandError> {
@@ -553,10 +566,8 @@ pub fn delete_local_dir(abs_path: String, db: State<'_, Db>) -> Result<(), Comma
     do_delete_local_dir(&abs_path)
 }
 
-/// Returns the modification time (in ms since Unix epoch) and size of a local file.
-#[tauri::command]
-pub fn stat_local_file(abs_path: String) -> Result<FileStat, CommandError> {
-    let meta = std::fs::metadata(&abs_path)
+fn do_stat_local_file(abs_path: &str) -> Result<FileStat, CommandError> {
+    let meta = std::fs::metadata(abs_path)
         .map_err(|e| format!("stat {abs_path}: {e}"))?;
     let mtime_ms = meta
         .modified()
@@ -569,6 +580,13 @@ pub fn stat_local_file(abs_path: String) -> Result<FileStat, CommandError> {
         size_bytes: meta.len() as i64,
         is_dir: meta.is_dir(),
     })
+}
+
+/// Returns the modification time (in ms since Unix epoch) and size of a local file.
+#[tauri::command]
+pub fn stat_local_file(abs_path: String, db: State<'_, Db>) -> Result<FileStat, CommandError> {
+    within_sync_root(&abs_path, &db)?;
+    do_stat_local_file(&abs_path)
 }
 
 fn do_rename_local_file(from_path: &str, to_path: &str) -> Result<(), CommandError> {
@@ -719,7 +737,8 @@ pub struct LocalFileEntry {
 }
 
 #[tauri::command]
-pub fn list_dir_recursive(abs_path: String) -> Result<Vec<LocalFileEntry>, CommandError> {
+pub fn list_dir_recursive(abs_path: String, db: State<'_, Db>) -> Result<Vec<LocalFileEntry>, CommandError> {
+    within_sync_root(&abs_path, &db)?;
     let root = std::path::Path::new(&abs_path);
     let mut results = Vec::new();
     collect_recursive(root, root, &mut results, 10_000)?;
@@ -751,6 +770,10 @@ fn collect_recursive(
             }
             collect_recursive(root, &path, out, cap)?;
         } else if ft.is_file() {
+            // Skip partial-download temp files left by an interrupted sync.
+            if path.extension().map_or(false, |e| e == "pd-tmp") {
+                continue;
+            }
             let Ok(meta) = std::fs::metadata(&path) else {
                 continue;
             };
@@ -1091,6 +1114,22 @@ mod tests {
     // ── collect_recursive ─────────────────────────────────────────────────────
 
     #[test]
+    fn collect_recursive_skips_pd_tmp_files() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("real.txt"), "data").unwrap();
+        fs::write(dir.path().join("real.txt.pd-tmp"), "partial").unwrap();
+        let sub = dir.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("nested.bin.pd-tmp"), "partial").unwrap();
+
+        let mut out = Vec::new();
+        collect_recursive(dir.path(), dir.path(), &mut out, 1000).unwrap();
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rel_path, "real.txt");
+    }
+
+    #[test]
     fn collect_recursive_skips_trash_subdirectory() {
         let dir = TempDir::new().unwrap();
         let trash = dir.path().join(".trash");
@@ -1152,7 +1191,7 @@ mod tests {
         fs::write(dir.path().join("file.txt"), "data").unwrap();
         fs::create_dir(dir.path().join("subdir")).unwrap();
 
-        let result = list_local_dir(dir.path().to_string_lossy().into_owned()).unwrap();
+        let result = do_list_local_dir(&dir.path().to_string_lossy()).unwrap();
         assert_eq!(result.len(), 1);
         assert!(result[0].ends_with("file.txt"));
     }
@@ -1160,13 +1199,24 @@ mod tests {
     #[test]
     fn list_local_dir_empty_dir_returns_empty() {
         let dir = TempDir::new().unwrap();
-        let result = list_local_dir(dir.path().to_string_lossy().into_owned()).unwrap();
+        let result = do_list_local_dir(&dir.path().to_string_lossy()).unwrap();
         assert!(result.is_empty());
     }
 
     #[test]
     fn list_local_dir_errors_on_nonexistent_path() {
-        assert!(list_local_dir("/nonexistent/path/zzzz".to_string()).is_err());
+        assert!(do_list_local_dir("/nonexistent/path/zzzz").is_err());
+    }
+
+    #[test]
+    fn list_local_dir_skips_pd_tmp_files() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("file.txt"), "data").unwrap();
+        fs::write(dir.path().join("file.txt.pd-tmp"), "partial").unwrap();
+
+        let result = do_list_local_dir(&dir.path().to_string_lossy()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].ends_with("file.txt"));
     }
 
     // ── read_local_file / write_local_file ────────────────────────────────────
@@ -1179,7 +1229,7 @@ mod tests {
         let encoded = base64::engine::general_purpose::STANDARD.encode(original);
 
         do_write_local_file(&path, &encoded).unwrap();
-        let result_b64 = read_local_file(path).unwrap();
+        let result_b64 = do_read_local_file(&path).unwrap();
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(result_b64)
             .unwrap();
@@ -1201,7 +1251,7 @@ mod tests {
 
     #[test]
     fn read_local_file_errors_on_missing_file() {
-        assert!(read_local_file("/nonexistent/file.txt".to_string()).is_err());
+        assert!(do_read_local_file("/nonexistent/file.txt").is_err());
     }
 
     #[test]
@@ -1304,7 +1354,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("sized.txt");
         fs::write(&path, "12345").unwrap(); // 5 bytes
-        let stat = stat_local_file(path.to_string_lossy().into_owned()).unwrap();
+        let stat = do_stat_local_file(&path.to_string_lossy()).unwrap();
         assert_eq!(stat.size_bytes, 5);
     }
 
@@ -1313,13 +1363,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("timed.txt");
         fs::write(&path, "x").unwrap();
-        let stat = stat_local_file(path.to_string_lossy().into_owned()).unwrap();
+        let stat = do_stat_local_file(&path.to_string_lossy()).unwrap();
         assert!(stat.mtime_ms > 0);
     }
 
     #[test]
     fn stat_local_file_errors_on_missing() {
-        assert!(stat_local_file("/nonexistent/missing.txt".to_string()).is_err());
+        assert!(do_stat_local_file("/nonexistent/missing.txt").is_err());
     }
 
     // ── validate_local_root ───────────────────────────────────────────────────

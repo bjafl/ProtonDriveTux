@@ -78,6 +78,11 @@ pub fn start_watcher(app: AppHandle, watch_path: PathBuf) -> Arc<AtomicBool> {
                         _ => continue, // skip Access, Other, etc.
                     };
                     for path in event.paths {
+                        // Skip temp files used for atomic downloads — filtered again in TS,
+                        // but dropping here avoids unnecessary debounce and IPC overhead.
+                        if path.extension().map_or(false, |e| e == "pd-tmp") {
+                            continue;
+                        }
                         pending.insert(path, kind.to_string());
                     }
                     deadline = Some(Instant::now() + debounce);

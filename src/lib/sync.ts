@@ -450,6 +450,7 @@ async function initialSyncLocalFolder(): Promise<void> {
 // ── Local → Remote ───────────────────────────────────────────────────────────
 
 async function handleLocalChange(event: WatchEvent): Promise<void> {
+  if (event.absPath.endsWith(".pd-tmp")) return;
   if (_paused) {
     console.log("[sync] paused — ignoring local event for", event.absPath);
     return;
@@ -516,7 +517,6 @@ async function handleLocalDirDeleteToRemote(folderUid: string, localDir: string)
         watchedFolderUids.delete(uid);
       }
     }
-    watchedFolderUids.delete(folderUid);
     // Clean up any remaining DB rows under this tree (files may already be gone).
     const allFiles = await invoke<FileState[]>("get_all_file_states");
     for (const f of allFiles) {

@@ -190,14 +190,3 @@ async function persistTokens(
   await invoke("store_tokens", { uid, accessToken, refreshToken, userId });
 }
 
-export async function doLogout(accessToken: string, uid: string): Promise<void> {
-  try {
-    await apiFetch(`/auth/v4`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${accessToken}`, "x-pm-uid": uid },
-    });
-  } catch {
-    // Best-effort — Rust will clear keyring regardless
-  }
-  await invoke("logout");
-}
