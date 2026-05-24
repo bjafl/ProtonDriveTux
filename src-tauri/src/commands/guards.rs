@@ -3,7 +3,7 @@ use super::CommandError;
 
 /// Resolves `path` to a canonical, symlink-free form.
 /// If the path does not yet exist (e.g. a `.pd-tmp` file about to be created),
-/// canonicalises the parent directory and appends the filename component instead.
+/// canonicalizes the parent directory and appends the filename component instead.
 pub(super) fn canonical(path: &str) -> Result<std::path::PathBuf, CommandError> {
     let p = std::path::Path::new(path);
     if p.exists() {

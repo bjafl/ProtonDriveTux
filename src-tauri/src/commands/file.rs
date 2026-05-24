@@ -74,7 +74,7 @@ pub fn write_local_file(abs_path: String, content_b64: String, db: State<'_, Db>
 }
 
 /// Creates (or truncates) a local file, creating parent dirs as needed.
-/// Used to initialise a file before streaming chunks via write_local_file_chunk.
+/// Used to initialize a file before streaming chunks via write_local_file_chunk.
 #[tauri::command]
 pub fn truncate_local_file(abs_path: String, db: State<'_, Db>) -> Result<(), CommandError> {
     within_sync_root(&abs_path, &db)?;

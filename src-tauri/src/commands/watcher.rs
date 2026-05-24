@@ -1,4 +1,3 @@
-use std::sync::{atomic::AtomicBool, Arc};
 use tauri::State;
 use super::{AppState, CommandError};
 use crate::watcher;

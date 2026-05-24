@@ -1,5 +1,8 @@
 import { CryptoProxy } from "@protontech/crypto";
-import type { PrivateKeyReference, PublicKeyReference as PublicKey } from "@protontech/crypto";
+import type {
+  PrivateKeyReference,
+  PublicKeyReference as PublicKey,
+} from "@protontech/crypto";
 import { fetch } from "./tauriFetch";
 import type {
   ProtonDriveAccount,
@@ -17,7 +20,7 @@ interface UserKey {
 interface AddressKey {
   ID: string;
   PrivateKey: string;
-  Token?: string;     // present when key is encrypted with user key (older accounts)
+  Token?: string; // present when key is encrypted with user key (older accounts)
   Signature?: string;
   Active: number;
   Primary: number;
@@ -34,7 +37,11 @@ interface PublicKeysResponse {
   Keys: Array<{ Flags: number; PublicKey: string }>;
 }
 
-async function apiFetch(path: string, token: string, uid: string): Promise<unknown> {
+async function apiFetch(
+  path: string,
+  token: string,
+  uid: string,
+): Promise<unknown> {
   const resp = await fetch(`${BASE_URL}${path}`, {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -59,10 +66,13 @@ async function fetchAndDecryptUserKeys(
   for (const k of data.User.Keys) {
     if (!k.Active) continue;
     try {
-      const key = await CryptoProxy.importPrivateKey({ armoredKey: k.PrivateKey, passphrase: keyPassword });
+      const key = await CryptoProxy.importPrivateKey({
+        armoredKey: k.PrivateKey,
+        passphrase: keyPassword,
+      });
       decrypted.push(key);
     } catch {
-      // skip undecryptable user keys
+      // skip non-decryptable user keys
     }
   }
   return decrypted;
@@ -98,10 +108,15 @@ async function buildAddress(
   for (const k of address.Keys) {
     if (!k.Active) continue;
     try {
-      const key = await decryptAddressKey(k.PrivateKey, k.Token, userKeys, keyPassword);
+      const key = await decryptAddressKey(
+        k.PrivateKey,
+        k.Token,
+        userKeys,
+        keyPassword,
+      );
       keys.push({ id: k.ID, key });
     } catch {
-      // skip undecryptable address keys
+      // skip non-decryptable address keys
     }
   }
   const primaryIndex = address.Keys.findIndex((k) => k.Primary === 1);
@@ -154,7 +169,9 @@ export function createAccountProvider(
       return fetchAddresses();
     },
 
-    async getOwnAddress(emailOrAddressId: string): Promise<ProtonDriveAccountAddress> {
+    async getOwnAddress(
+      emailOrAddressId: string,
+    ): Promise<ProtonDriveAccountAddress> {
       const addresses = await fetchAddresses();
       const found = addresses.find(
         (a) => a.email === emailOrAddressId || a.addressId === emailOrAddressId,
@@ -178,7 +195,10 @@ export function createAccountProvider(
       }
     },
 
-    async getPublicKeys(email: string, forceRefresh = false): Promise<PublicKey[]> {
+    async getPublicKeys(
+      email: string,
+      forceRefresh = false,
+    ): Promise<PublicKey[]> {
       if (!forceRefresh && publicKeyCache.has(email)) {
         return publicKeyCache.get(email)!;
       }
@@ -193,7 +213,9 @@ export function createAccountProvider(
         const keys: PublicKey[] = [];
         for (const k of data.Keys ?? []) {
           try {
-            const key = await CryptoProxy.importPublicKey({ armoredKey: k.PublicKey });
+            const key = await CryptoProxy.importPublicKey({
+              armoredKey: k.PublicKey,
+            });
             keys.push(key);
           } catch {
             // skip invalid keys

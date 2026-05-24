@@ -14,10 +14,10 @@ mod ui;
 
 pub use auth::{store_tokens, logout, store_key_password, get_key_password, get_auth_status, get_session_tokens, restore_session_from_keyring, open_captcha_window, close_captcha_window};
 pub use db::{get_all_file_states, upsert_file_state, set_file_sync_state, get_file_state_by_remote_id, get_file_state_by_local_path, get_db_sync_config, set_db_sync_config, delete_file_state, clear_all_file_states};
-pub use file::{ensure_local_dir, list_local_dir, read_local_file, write_local_file, truncate_local_file, write_local_file_chunk, trash_local_file, delete_local_file, delete_local_dir, stat_local_file, rename_local_file, list_dir_recursive, LocalFileEntry};
-pub use config::{validate_local_root, set_local_root, get_local_root, get_home_dir, LocalRootInfo};
+pub use file::{ensure_local_dir, list_local_dir, read_local_file, write_local_file, truncate_local_file, write_local_file_chunk, trash_local_file, delete_local_file, delete_local_dir, stat_local_file, rename_local_file, list_dir_recursive};
+pub use config::{validate_local_root, set_local_root, get_local_root, get_home_dir};
 pub use watcher::{start_file_watcher, stop_file_watcher};
-pub use ui::{show_notification, get_autostart_enabled, enable_autostart, disable_autostart, update_tray_status, get_tray_status, show_main_window, emit_pause_toggle, RecentFile, TrayStatusPayload};
+pub use ui::{show_notification, get_autostart_enabled, enable_autostart, disable_autostart, update_tray_status, get_tray_status, show_main_window, emit_pause_toggle, TrayStatusPayload};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CommandError {
