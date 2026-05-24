@@ -37,15 +37,27 @@ pub async fn store_session(session: &AuthSession) -> Result<(), KeyringError> {
 }
 
 pub async fn load_session() -> Option<AuthSession> {
-    let ss = SecretService::connect(EncryptionType::Dh).await.ok()?;
-    let collection = ss.get_default_collection().await.ok()?;
-    collection.unlock().await.ok()?;
+    let ss = SecretService::connect(EncryptionType::Dh).await
+        .map_err(|e| eprintln!("[keyring] Failed to connect to Secret Service: {e}"))
+        .ok()?;
+    let collection = ss.get_default_collection().await
+        .map_err(|e| eprintln!("[keyring] Failed to get default collection: {e}"))
+        .ok()?;
+    collection.unlock().await
+        .map_err(|e| eprintln!("[keyring] Failed to unlock collection: {e}"))
+        .ok()?;
 
-    let items = collection.search_items(session_attrs()).await.ok()?;
+    let items = collection.search_items(session_attrs()).await
+        .map_err(|e| eprintln!("[keyring] Failed to search for session item: {e}"))
+        .ok()?;
     let item = items.first()?;
-    let bytes = item.get_secret().await.ok()?;
+    let bytes = item.get_secret().await
+        .map_err(|e| eprintln!("[keyring] Failed to read session secret: {e}"))
+        .ok()?;
 
-    serde_json::from_slice(&bytes).ok()
+    serde_json::from_slice(&bytes)
+        .map_err(|e| eprintln!("[keyring] Failed to deserialize session: {e}"))
+        .ok()
 }
 
 pub async fn clear_session() -> Result<(), KeyringError> {
@@ -84,13 +96,25 @@ pub async fn store_key_password(key_password: &str) -> Result<(), KeyringError> 
 }
 
 pub async fn load_key_password() -> Option<String> {
-    let ss = SecretService::connect(EncryptionType::Dh).await.ok()?;
-    let collection = ss.get_default_collection().await.ok()?;
-    collection.unlock().await.ok()?;
-    let items = collection.search_items(key_password_attrs()).await.ok()?;
+    let ss = SecretService::connect(EncryptionType::Dh).await
+        .map_err(|e| eprintln!("[keyring] Failed to connect to Secret Service: {e}"))
+        .ok()?;
+    let collection = ss.get_default_collection().await
+        .map_err(|e| eprintln!("[keyring] Failed to get default collection: {e}"))
+        .ok()?;
+    collection.unlock().await
+        .map_err(|e| eprintln!("[keyring] Failed to unlock collection: {e}"))
+        .ok()?;
+    let items = collection.search_items(key_password_attrs()).await
+        .map_err(|e| eprintln!("[keyring] Failed to search for key password item: {e}"))
+        .ok()?;
     let item = items.first()?;
-    let bytes = item.get_secret().await.ok()?;
-    String::from_utf8(bytes).ok()
+    let bytes = item.get_secret().await
+        .map_err(|e| eprintln!("[keyring] Failed to read key password secret: {e}"))
+        .ok()?;
+    String::from_utf8(bytes)
+        .map_err(|e| eprintln!("[keyring] Failed to decode key password as UTF-8: {e}"))
+        .ok()
 }
 
 pub async fn clear_key_password() -> Result<(), KeyringError> {
