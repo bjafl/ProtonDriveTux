@@ -31,6 +31,7 @@ import {
 } from "./drive";
 import { findWatchedFolderByPath } from "./syncHelpers";
 import type { WatchedFolderEntry, SelectedFolderRecord } from "./syncHelpers";
+export type { WatchedFolderEntry };
 import { guessMimeType, isAlreadySynced } from "./syncDecisions";
 import type { FileStat } from "./syncDecisions";
 export type { SelectedFolderRecord };
@@ -198,7 +199,8 @@ async function statFile(absPath: string): Promise<FileStat | null> {
   }
 }
 
-async function waitForFileStable(absPath: string): Promise<FileStat | null> {
+/** @internal */
+export async function waitForFileStable(absPath: string): Promise<FileStat | null> {
   const first = await statFile(absPath);
   if (!first) return null;
   await new Promise<void>((r) => setTimeout(r, 1_000));
@@ -240,7 +242,8 @@ async function loadSyncConfig(): Promise<{
 
 // ── Watched folder map ───────────────────────────────────────────────────────
 
-async function expandFolderUids(
+/** @internal */
+export async function expandFolderUids(
   folderUid: string,
   localDir: string,
   selectedRoot: SelectedFolderRecord,
@@ -280,7 +283,8 @@ function findWatchedDirUidByLocalPath(absPath: string): string | undefined {
 
 // ── Full reconciliation ───────────────────────────────────────────────────────
 
-async function cleanStaleDbEntries(): Promise<void> {
+/** @internal */
+export async function cleanStaleDbEntries(): Promise<void> {
   const allFiles = await invoke<FileState[]>("get_all_file_states");
   for (const f of allFiles) {
     const stat = await statFile(f.localPath);
@@ -429,7 +433,8 @@ async function initialSyncLocalFolder(): Promise<void> {
 
 // ── Local → Remote ───────────────────────────────────────────────────────────
 
-async function handleLocalChange(event: WatchEvent): Promise<void> {
+/** @internal */
+export async function handleLocalChange(event: WatchEvent): Promise<void> {
   if (event.absPath.endsWith(".pd-tmp")) return;
   if (_paused) {
     console.log("[sync] paused — ignoring local event for", event.absPath);
@@ -537,7 +542,8 @@ async function handleLocalDirCreate(absPath: string): Promise<void> {
   }
 }
 
-async function handleLocalUpsert(absPath: string, checkStability: boolean): Promise<void> {
+/** @internal */
+export async function handleLocalUpsert(absPath: string, checkStability: boolean): Promise<void> {
   const match = findWatchedFolderByLocalPath(absPath);
   if (!match) {
     console.log("[sync] file not in any watched folder, skipping:", absPath);
@@ -685,7 +691,8 @@ async function handleDriveEvent(event: DriveEvent): Promise<void> {
   }
 }
 
-async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
+/** @internal */
+export async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
   const label = nodeUid;
   markActive(label);
   try {
@@ -781,7 +788,8 @@ async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
   }
 }
 
-async function handleRemoteDelete(nodeUid: string): Promise<void> {
+/** @internal */
+export async function handleRemoteDelete(nodeUid: string): Promise<void> {
   try {
     // 1. Known file in DB
     const fileState = await invoke<FileState | null>("get_file_state_by_remote_id", {
@@ -839,4 +847,27 @@ async function handleRemoteDirDelete(folderUid: string, localDir: string): Promi
   suppressPath(localDir);
   await invoke("delete_local_dir", { absPath: localDir });
   console.log("[sync] deleted local directory:", localDir, "(remote:", folderUid, ")");
+}
+
+// ── Test utilities (not part of public API) ───────────────────────────────────
+
+/** @internal */
+export function _resetSyncStateForTesting(): void {
+  suppressUntil.clear();
+  recentlyUploaded.clear();
+  watchedFolderUids.clear();
+  _paused = false;
+  _fullSyncInProgress = false;
+  _status = { active: [], errors: [] };
+  _statusCallback = null;
+  _lastErrorNotificationMs = 0;
+  if (_trayUpdateTimer) clearTimeout(_trayUpdateTimer);
+  _trayUpdateTimer = null;
+  _recentlySynced.length = 0;
+}
+
+/** @internal */
+export function _setWatchedFoldersForTesting(entries: Map<string, WatchedFolderEntry>): void {
+  watchedFolderUids.clear();
+  for (const [k, v] of entries) watchedFolderUids.set(k, v);
 }
