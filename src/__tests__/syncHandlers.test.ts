@@ -181,12 +181,18 @@ describe("handleLocalUpsert", () => {
     expect(getFileUploader).toHaveBeenCalledWith(
       FOLDER_UID,
       "file.txt",
-      expect.objectContaining({ mediaType: "text/plain", expectedSize: 5 }),
+      expect.objectContaining({
+        mediaType: "text/plain",
+        expectedSize: 5,
+        modificationTime: expect.any(Date),
+      }),
     );
     expect(upsertedState).toMatchObject({
       remoteId: "new-uid",
       localPath: `${ROOT}/file.txt`,
       etag: "new-rev",
+      modifiedAt: 2000,
+      sizeBytes: 5,
       syncState: "synced",
     });
   });
@@ -205,6 +211,7 @@ describe("handleLocalUpsert", () => {
       uploadFromFile: vi.fn().mockResolvedValue(mockController),
     } as never);
 
+    let upsertedRevState: unknown;
     setupIpcMocks({
       stat_local_file: () => ({ mtimeMs: 3000, sizeBytes: 7, isDir: false }),
       get_file_state_by_local_path: () => ({
@@ -215,13 +222,30 @@ describe("handleLocalUpsert", () => {
         sizeBytes: 5,
         syncState: "synced",
       }),
-      upsert_file_state: () => null,
+      upsert_file_state: (args) => {
+        upsertedRevState = args;
+        return null;
+      },
       show_notification: () => null,
     });
 
     await handleLocalUpsert(`${ROOT}/file.txt`, false);
 
-    expect(getFileRevisionUploader).toHaveBeenCalledWith("node-1", expect.any(Object));
+    expect(getFileRevisionUploader).toHaveBeenCalledWith(
+      "node-1",
+      expect.objectContaining({
+        mediaType: "text/plain",
+        expectedSize: 7,
+        modificationTime: expect.any(Date),
+      }),
+    );
+    expect(upsertedRevState).toMatchObject({
+      remoteId: "node-1",
+      etag: "rev-2",
+      modifiedAt: 3000,
+      sizeBytes: 7,
+      syncState: "synced",
+    });
   });
 
   it("skips upload when waitForFileStable returns null (file disappeared)", async () => {
