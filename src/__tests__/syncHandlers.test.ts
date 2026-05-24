@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   handleLocalChange,
   handleLocalUpsert,
+  handleRemoteDelete,
   _resetSyncStateForTesting,
   _setWatchedFoldersForTesting,
   pauseSync,
@@ -37,7 +38,10 @@ import {
   findOrCreateFolder,
   getFileUploader,
   getFileRevisionUploader,
+  getNode,
+  streamDownloadToPath as _streamDownloadToPath, // imported for Task 8 (handleRemoteCreate tests)
 } from "../lib/drive";
+import { NodeType } from "@protontech/drive-sdk";
 
 const ROOT = "/home/test/ProtonDrive";
 const FOLDER_UID = "folder-uid-1";
@@ -256,5 +260,115 @@ describe("handleLocalUpsert", () => {
     const mockFetch = vi.mocked(fetch);
     await handleLocalUpsert(`${ROOT}/file.txt`, true);
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
+
+// ── handleRemoteDelete ────────────────────────────────────────────────────────
+
+describe("handleRemoteDelete", () => {
+  it("deletes local file and DB entry when node is a known file", async () => {
+    const deletedPaths: string[] = [];
+    const deletedIds: string[] = [];
+    setupIpcMocks({
+      get_file_state_by_remote_id: ({ remoteId }) =>
+        remoteId === "node-1"
+          ? {
+              remoteId: "node-1",
+              localPath: `${ROOT}/file.txt`,
+              etag: "rev-1",
+              modifiedAt: 1000,
+              sizeBytes: 100,
+              syncState: "synced",
+            }
+          : null,
+      delete_local_file: ({ absPath }) => {
+        deletedPaths.push(absPath as string);
+        return null;
+      },
+      delete_file_state: ({ remoteId }) => {
+        deletedIds.push(remoteId as string);
+        return null;
+      },
+    });
+
+    await handleRemoteDelete("node-1");
+
+    expect(deletedPaths).toContain(`${ROOT}/file.txt`);
+    expect(deletedIds).toContain("node-1");
+  });
+
+  it("deletes local directory when node is in watchedFolderUids", async () => {
+    const subDirUid = "subdir-uid";
+    _setWatchedFoldersForTesting(
+      new Map([
+        [
+          FOLDER_UID,
+          {
+            localDir: ROOT,
+            selectedRoot: {
+              uid: FOLDER_UID,
+              name: "ProtonDrive",
+              drivePath: "",
+              mode: "files",
+            },
+          },
+        ],
+        [
+          subDirUid,
+          {
+            localDir: `${ROOT}/subdir`,
+            selectedRoot: {
+              uid: FOLDER_UID,
+              name: "ProtonDrive",
+              drivePath: "",
+              mode: "files",
+            },
+          },
+        ],
+      ]),
+    );
+
+    const deletedDirs: string[] = [];
+    setupIpcMocks({
+      get_file_state_by_remote_id: () => null,
+      get_all_file_states: () => [],
+      delete_local_dir: ({ absPath }) => {
+        deletedDirs.push(absPath as string);
+        return null;
+      },
+    });
+
+    await handleRemoteDelete(subDirUid);
+
+    expect(deletedDirs).toContain(`${ROOT}/subdir`);
+  });
+
+  it("resolves unknown node via getNode and deletes inferred local directory", async () => {
+    vi.mocked(getNode).mockResolvedValue({
+      ok: true,
+      value: {
+        uid: "unknown-dir",
+        name: "discovered",
+        type: NodeType.Folder,
+        parentUid: FOLDER_UID,
+        activeRevision: null,
+        modificationTime: new Date(),
+      },
+    } as never);
+
+    const deletedDirs: string[] = [];
+    setupIpcMocks({
+      get_file_state_by_remote_id: () => null,
+      get_all_file_states: () => [],
+      delete_local_dir: ({ absPath }) => {
+        deletedDirs.push(absPath as string);
+        return null;
+      },
+    });
+
+    await handleRemoteDelete("unknown-dir");
+
+    expect(getNode).toHaveBeenCalledWith("unknown-dir");
+    expect(deletedDirs).toContain(`${ROOT}/discovered`);
   });
 });
