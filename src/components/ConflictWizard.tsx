@@ -3,10 +3,10 @@
  * and Drive has files in the selected folders.
  *
  * Conflict types:
- *   local only  → will be uploaded (auto, not shown)
- *   remote only → will be downloaded (auto, not shown)
- *   both, same size → treated as identical, skipped (not shown)
- *   both, different → user decides per row
+ *   local only             → will be uploaded (auto, not shown)
+ *   remote only            → will be downloaded (auto, not shown)
+ *   both, same size+mtime  → treated as identical, skipped (not shown)
+ *   both, different        → user decides per row
  */
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -121,14 +121,14 @@ export function ConflictWizard({ localRoot, selectedFolders, onComplete, onBack 
     }
   }
 
-  if (conflicts === null) {
-    return <p className="no-events">{t.loading}</p>;
-  }
+  // Auto-proceed when detection finishes with zero conflicts.
+  // Must be in useEffect — calling onComplete() during render is a React violation.
+  useEffect(() => {
+    if (conflicts !== null && conflicts.length === 0) onComplete();
+  }, [conflicts, onComplete]);
 
-  if (conflicts.length === 0) {
-    // No conflicts — auto-proceed.
-    onComplete();
-    return null;
+  if (conflicts === null || conflicts.length === 0) {
+    return <p className="no-events">{t.loading}</p>;
   }
 
   return (
@@ -268,8 +268,11 @@ async function collectRemoteFiles(
     const remoteSizeBytes = node.activeRevision?.claimedSize ?? null;
     const remoteMtimeMs = node.modificationTime?.getTime() ?? null;
 
-    // Same size → treat as identical, skip
-    if (remoteSizeBytes !== null && remoteSizeBytes === local.sizeBytes) continue;
+    // Same size AND same mtime (±2 s) → treat as identical, skip.
+    // Size alone is insufficient: same-length edits would be silently missed.
+    const sameSize = remoteSizeBytes !== null && remoteSizeBytes === local.sizeBytes;
+    const sameMtime = remoteMtimeMs !== null && Math.abs(remoteMtimeMs - local.mtimeMs) < 2_000;
+    if (sameSize && sameMtime) continue;
 
     conflicts.push({
       relPath,
@@ -288,21 +291,26 @@ async function collectRemoteFiles(
 
 // ── Resolution execution ──────────────────────────────────────────────────────
 
+// Same streaming pattern as handleRemoteNodeUpdate in sync.ts:
+// write chunks directly to a .pd-tmp file, then rename atomically on success.
+// This keeps peak memory bounded to one chunk (~256 KB) and leaves no
+// partial file at the destination if the download fails.
 async function downloadAndWrite(remote: RemoteFile, absPath: string): Promise<void> {
+  const tmpPath = absPath + ".pd-tmp";
+  await invoke("truncate_local_file", { absPath: tmpPath });
   const downloader = await getFileDownloader(remote.uid);
-  const chunks: Uint8Array[] = [];
-  const writable = new WritableStream<Uint8Array>({
-    write(chunk) { chunks.push(new Uint8Array(chunk)); },
-  });
-  await downloader.downloadToStream(writable, () => {}).completion();
-
-  const totalLength = chunks.reduce((s, c) => s + c.length, 0);
-  const merged = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.length; }
-
-  let binary = "";
-  for (let i = 0; i < merged.length; i++) binary += String.fromCharCode(merged[i]);
-
-  await invoke("write_local_file", { absPath, contentB64: btoa(binary) });
+  try {
+    const writable = new WritableStream<Uint8Array>({
+      async write(chunk) {
+        let binary = "";
+        for (let i = 0; i < chunk.length; i++) binary += String.fromCharCode(chunk[i]);
+        await invoke("write_local_file_chunk", { absPath: tmpPath, contentB64: btoa(binary) });
+      },
+    });
+    await downloader.downloadToStream(writable, () => {}).completion();
+  } catch (err) {
+    await invoke("delete_local_file", { absPath: tmpPath }).catch(() => {});
+    throw err;
+  }
+  await invoke("rename_local_file", { fromPath: tmpPath, toPath: absPath });
 }
