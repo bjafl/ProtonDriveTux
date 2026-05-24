@@ -25,6 +25,7 @@ const DEFAULT_HANDLERS: Record<string, IpcHandler> = {
   list_dir_recursive: () => [],
 };
 
+/** Call in beforeEach(). Call teardownIpcMocks() in afterEach(). */
 export function setupIpcMocks(overrides: IpcOverrides = {}): void {
   const handlers = { ...DEFAULT_HANDLERS, ...overrides };
   mockIPC((cmd, payload) => {
