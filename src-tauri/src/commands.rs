@@ -1427,4 +1427,87 @@ mod tests {
         assert!(!result.is_empty);
         assert_eq!(result.file_count, 2);
     }
+
+    // ── canonical ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn canonical_returns_canonical_path_for_existing_file() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("real.txt");
+        fs::write(&file, "data").unwrap();
+        let result = canonical(file.to_str().unwrap()).unwrap();
+        assert!(result.is_absolute());
+        assert!(result.exists());
+    }
+
+    #[test]
+    fn canonical_resolves_nonexistent_file_in_existing_parent() {
+        let dir = TempDir::new().unwrap();
+        let ghost = dir.path().join("ghost.txt");
+        let result = canonical(ghost.to_str().unwrap()).unwrap();
+        assert_eq!(result.file_name().unwrap(), "ghost.txt");
+        assert!(!result.exists());
+    }
+
+    #[test]
+    fn canonical_fails_when_parent_directory_does_not_exist() {
+        let result = canonical("/does/not/exist/anywhere/file.txt");
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("canonicalize parent"),
+            "expected 'canonicalize parent' in error"
+        );
+    }
+
+    // ── within_sync_root ──────────────────────────────────────────────────────────
+
+    fn make_db_with_root(root: &str) -> Db {
+        let db = Db::open_in_memory().unwrap();
+        db.set_sync_config("local_root", root).unwrap();
+        db
+    }
+
+    #[test]
+    fn within_sync_root_accepts_path_inside_root() {
+        let dir = TempDir::new().unwrap();
+        let db = make_db_with_root(dir.path().to_str().unwrap());
+        let file = dir.path().join("file.txt");
+        fs::write(&file, "x").unwrap();
+        assert!(within_sync_root(file.to_str().unwrap(), &db).is_ok());
+    }
+
+    #[test]
+    fn within_sync_root_rejects_path_outside_root() {
+        let root_dir = TempDir::new().unwrap();
+        let other_dir = TempDir::new().unwrap();
+        let db = make_db_with_root(root_dir.path().to_str().unwrap());
+        let outside = other_dir.path().join("secret.txt");
+        fs::write(&outside, "x").unwrap();
+        let result = within_sync_root(outside.to_str().unwrap(), &db);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("outside sync root"),
+            "expected 'outside sync root' in error"
+        );
+    }
+
+    #[test]
+    fn within_sync_root_rejects_dotdot_traversal() {
+        let dir = TempDir::new().unwrap();
+        let db = make_db_with_root(dir.path().to_str().unwrap());
+        let traversal = format!("{}/../../../etc/passwd", dir.path().display());
+        let result = within_sync_root(&traversal, &db);
+        assert!(result.is_err(), "dotdot traversal should be rejected");
+    }
+
+    #[test]
+    fn within_sync_root_returns_error_when_root_not_configured() {
+        let db = Db::open_in_memory().unwrap();
+        let result = within_sync_root("/any/path/file.txt", &db);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("not configured"),
+            "expected 'not configured' in error"
+        );
+    }
 }

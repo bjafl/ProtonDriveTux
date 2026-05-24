@@ -174,6 +174,32 @@ impl Db {
     }
 }
 
+// ── Test helpers ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+impl Db {
+    /// Creates an in-memory database with the full schema applied.
+    /// Only available in test builds.
+    pub fn open_in_memory() -> rusqlite::Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE files (
+                remote_id   TEXT PRIMARY KEY,
+                local_path  TEXT NOT NULL UNIQUE,
+                etag        TEXT,
+                modified_at INTEGER,
+                size_bytes  INTEGER,
+                sync_state  TEXT NOT NULL
+            );
+            CREATE TABLE sync_config (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
+        )?;
+        Ok(Db { conn: Mutex::new(conn) })
+    }
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
