@@ -13,7 +13,7 @@ export function UnlockForm({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [remember, setRemember] = useState(false);
-  const { accessToken, logout, unlock, error: authError } = useAuth();
+  const { tokens, logout, unlock, error: authError } = useAuth();
   const { t } = useLang();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -21,7 +21,7 @@ export function UnlockForm({
     setError(null);
     setLoading(true);
     try {
-      if (!accessToken)
+      if (!tokens?.accessToken)
         throw new Error("No stored session — please log in again");
       if (!(await unlock(password, remember))) {
         throw new Error("Login failed."); //TODO
