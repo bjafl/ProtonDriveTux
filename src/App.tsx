@@ -1,9 +1,7 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { LoginForm } from "./components/LoginForm";
 import { Onboarding, isOnboardingNeeded } from "./components/Onboarding";
 import { Dashboard } from "./components/Dashboard";
-import { releaseDriveClient } from "./lib/drive";
 import { useLang } from "./lib/i18n";
 import { UnlockForm } from "./components/UnlockForm";
 import "./App.css";
@@ -14,36 +12,38 @@ type AppState = "loading" | "unlocking" | "loggedOut" | "onboarding" | "ready";
 export function App() {
   const [appState, setAppState] = useState<AppState>("loading");
   const {
-    status: authStatus,
-    loading: authLoading,
+    loggedIn,
+    state: authState,
+    tokens,
+    keyPassword,
     error: authError,
-    refresh: refreshAuth,
+    logout,
   } = useAuth();
   const { t } = useLang();
 
   const handleSessionExpired = async () => {
-    await invoke("logout").catch(console.error);
-    releaseDriveClient();
+    await logout();
     setAppState("loggedOut");
   };
 
-  // Refresh auth on mount
   useEffect(() => {
-    refreshAuth();
-  }, []);
-
-  useEffect(() => {
-    if (!authStatus || !authStatus.loggedIn) {
+    if (authState === "loading" || authState === "refreshing") return;
+    if (!loggedIn) {
       setAppState("loggedOut");
-    } else if (authLoading) {
-      setAppState("unlocking");
-    } else if (authError) {
-      handleSessionExpired();
+      return;
     }
-    isOnboardingNeeded().then((onboardNeeded) =>
-      onboardNeeded ? "onboarding" : "ready",
+    if (authError?.type === "expired") {
+      handleSessionExpired();
+      return;
+    }
+    if (!keyPassword) {
+      setAppState("unlocking");
+      return;
+    }
+    isOnboardingNeeded().then((needed) =>
+      setAppState(needed ? "onboarding" : "ready"),
     );
-  }, [authStatus, authLoading, authError]);
+  }, [authState, loggedIn, tokens, keyPassword, authError]);
 
   const goToNextState = async () => {
     setAppState((await isOnboardingNeeded()) ? "onboarding" : "ready");
@@ -57,12 +57,7 @@ export function App() {
     return <Onboarding onComplete={() => setAppState("ready")} />;
   }
   if (appState === "unlocking") {
-    return (
-      <UnlockForm
-        onUnlocked={goToNextState}
-        // onSessionExpired={handleSessionExpired}
-      />
-    );
+    return <UnlockForm onUnlocked={goToNextState} />;
   }
 
   return (
