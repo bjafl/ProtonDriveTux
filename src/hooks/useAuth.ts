@@ -62,12 +62,12 @@ export function useAuth() {
     let state: LoginState;
     if (loginStateRef.current !== null) {
       state = loginStateRef.current;
+    } else if (error != null) {
+      state = "error";
     } else if (tokens?.accessToken) {
       state = "loggedIn";
     } else if (refreshPromiseRef.current !== null) {
       state = "refreshing";
-    } else if (error != null) {
-      state = "error";
     } else {
       state = "loggedOut";
     }

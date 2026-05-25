@@ -217,6 +217,31 @@ describe("useAuth — submitTotp", () => {
     await act(async () => { await result.current.submitTotp("123456"); });
     expect(result.current.state).toBe("loggedIn");
     expect(result.current.keyPassword).toBe("kp1");
+    expect(vi.mocked(apiSubmitTotp)).toHaveBeenCalledWith(
+      "uid1",
+      "at1",
+      "rt1",
+      "usr1",
+      "123456",
+    );
+  });
+
+  it("sets state to error when TOTP submission fails", async () => {
+    vi.mocked(getSessionTokens).mockResolvedValue(null);
+    vi.mocked(apiStartLogin).mockResolvedValue({
+      ...LOGIN_RESULT_BASE,
+      twoFactorRequired: true,
+    });
+    vi.mocked(apiSubmitTotp).mockRejectedValue(new Error("invalid TOTP"));
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.state).toBe("loggedOut"));
+    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    expect(result.current.state).toBe("pendingTotp");
+
+    await act(async () => { await result.current.submitTotp("000000"); });
+    expect(result.current.state).toBe("error");
+    expect(result.current.error?.message).toContain("invalid TOTP");
   });
 });
 
@@ -244,6 +269,24 @@ describe("useAuth — submitMailboxPassword", () => {
       "uid1",
       "at1",
     );
+  });
+
+  it("sets state to error when key derivation fails", async () => {
+    vi.mocked(getSessionTokens).mockResolvedValue(null);
+    vi.mocked(apiStartLogin).mockResolvedValue({
+      ...LOGIN_RESULT_BASE,
+      dualPasswordMode: true,
+    });
+    vi.mocked(deriveKeyPassword).mockRejectedValue(new Error("wrong mailbox password"));
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.state).toBe("loggedOut"));
+    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    expect(result.current.state).toBe("pendingDualPassword");
+
+    await act(async () => { await result.current.submitMailboxPassword("bad-pass"); });
+    expect(result.current.state).toBe("error");
+    expect(result.current.error?.message).toContain("wrong mailbox password");
   });
 });
 
