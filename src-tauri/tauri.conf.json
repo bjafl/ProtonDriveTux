@@ -30,7 +30,16 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' pd-file:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ipc: http://ipc.localhost pd-file:"
+      "headers": {
+        "Cross-Origin-Opener-Policy": "same-origin"
+      },
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: blob:",
+        "connect-src": "ipc: http://ipc.localhost"
+      }
     }
   },
   "bundle": {

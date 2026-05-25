@@ -49,11 +49,16 @@ pub(super) fn do_read_local_file(abs_path: &str) -> Result<String, CommandError>
     Ok(STANDARD.encode(&bytes))
 }
 
-/// Reads a local file and returns its contents as a base64-encoded string.
+pub(super) fn do_read_local_file_raw(abs_path: &str) -> Result<Vec<u8>, CommandError> {
+    let bytes = std::fs::read(abs_path).map_err(|e| format!("read {abs_path}: {e}"))?;
+    Ok(bytes)
+}
+
+/// Reads a local file and returns its contents as raw bytes
 #[tauri::command]
-pub fn read_local_file(abs_path: String, db: State<'_, Db>) -> Result<String, CommandError> {
+pub fn read_local_file(abs_path: String, db: State<'_, Db>) -> Result<Vec<u8>, CommandError> {
     within_sync_root(&abs_path, &db)?;
-    do_read_local_file(&abs_path)
+    do_read_local_file_raw(&abs_path)
 }
 
 pub(super) fn do_write_local_file(abs_path: &str, content_b64: &str) -> Result<(), CommandError> {

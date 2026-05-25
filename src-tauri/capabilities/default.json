@@ -8,9 +8,7 @@
     "opener:default",
     {
       "identifier": "http:default",
-      "allow": [
-        { "url": "https://*.proton.me/*" }
-      ]
+      "allow": [{ "url": "https://*.proton.me/*" }]
     }
   ]
 }

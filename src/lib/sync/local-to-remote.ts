@@ -75,9 +75,12 @@ async function handleLocalDelete(absPath: string): Promise<void> {
     return;
   }
 
-  const existing = await invoke<FileState | null>("get_file_state_by_local_path", {
-    localPath: absPath,
-  });
+  const existing = await invoke<FileState | null>(
+    "get_file_state_by_local_path",
+    {
+      localPath: absPath,
+    },
+  );
   if (!existing) {
     console.log("[sync] local delete: no DB entry for", absPath, "— skipping");
     return;
@@ -96,13 +99,19 @@ async function handleLocalDelete(absPath: string): Promise<void> {
   }
 }
 
-async function handleLocalDirDeleteToRemote(folderUid: string, localDir: string): Promise<void> {
+async function handleLocalDirDeleteToRemote(
+  folderUid: string,
+  localDir: string,
+): Promise<void> {
   markActive(localDir);
   try {
     await trashNode(folderUid);
     // Prune watchedFolderUids for this dir and all its subdirs.
     for (const [uid, entry] of watchedFolderUids) {
-      if (entry.localDir === localDir || entry.localDir.startsWith(localDir + "/")) {
+      if (
+        entry.localDir === localDir ||
+        entry.localDir.startsWith(localDir + "/")
+      ) {
         watchedFolderUids.delete(uid);
       }
     }
@@ -110,10 +119,18 @@ async function handleLocalDirDeleteToRemote(folderUid: string, localDir: string)
     const allFiles = await invoke<FileState[]>("get_all_file_states");
     for (const f of allFiles) {
       if (f.localPath === localDir || f.localPath.startsWith(localDir + "/")) {
-        await invoke("delete_file_state", { remoteId: f.remoteId }).catch(console.error);
+        await invoke("delete_file_state", { remoteId: f.remoteId }).catch(
+          console.error,
+        );
       }
     }
-    console.log("[sync] trashed remote dir for deleted local dir:", localDir, "(uid:", folderUid, ")");
+    console.log(
+      "[sync] trashed remote dir for deleted local dir:",
+      localDir,
+      "(uid:",
+      folderUid,
+      ")",
+    );
   } catch (err) {
     console.error("[sync] failed to trash remote dir:", localDir, err);
     recordError(localDir, String(err));
@@ -135,7 +152,10 @@ async function handleLocalDirCreate(absPath: string): Promise<void> {
     if (!result.ok) throw new Error(String(result.error));
     const folderUid = result.value.uid;
     if (!watchedFolderUids.has(folderUid)) {
-      watchedFolderUids.set(folderUid, { localDir: absPath, selectedRoot: match.entry.selectedRoot });
+      watchedFolderUids.set(folderUid, {
+        localDir: absPath,
+        selectedRoot: match.entry.selectedRoot,
+      });
     }
     console.log("[sync] created remote dir:", absPath, "→", folderUid);
   } catch (err) {
@@ -147,7 +167,10 @@ async function handleLocalDirCreate(absPath: string): Promise<void> {
 }
 
 /** @internal */
-export async function handleLocalUpsert(absPath: string, checkStability: boolean): Promise<void> {
+export async function handleLocalUpsert(
+  absPath: string,
+  checkStability: boolean,
+): Promise<void> {
   const match = findWatchedFolderByLocalPath(absPath);
   if (!match) {
     console.log("[sync] file not in any watched folder, skipping:", absPath);
@@ -158,38 +181,52 @@ export async function handleLocalUpsert(absPath: string, checkStability: boolean
   const label = absPath;
   markActive(label);
   try {
-    const stat = checkStability ? await waitForFileStable(absPath) : await statFile(absPath);
+    const stat = checkStability
+      ? await waitForFileStable(absPath)
+      : await statFile(absPath);
     if (!stat) {
       console.log("[sync] skipping (file disappeared or unreadable):", absPath);
       return;
     }
 
-    const existing = await invoke<FileState | null>("get_file_state_by_local_path", {
-      localPath: absPath,
-    });
+    const existing = await invoke<FileState | null>(
+      "get_file_state_by_local_path",
+      {
+        localPath: absPath,
+      },
+    );
 
     if (isAlreadySynced(stat, existing)) {
-      console.log("[sync] skipping upload — size and mtime unchanged:", absPath);
+      console.log(
+        "[sync] skipping upload — size and mtime unchanged:",
+        absPath,
+      );
       return;
     }
 
     // Fetch raw file bytes via pd-file:// to avoid base64 encoding the entire file
     // over IPC — large files would otherwise OOM the WebView.
-    let blob: Blob;
-    try {
-      const response = await fetch(`pd-file://${absPath}`);
-      if (!response.ok) throw new Error(`pd-file fetch ${response.status}`);
-      blob = await response.blob();
-    } catch (err) {
-      console.log("[sync] skipping (unreadable via pd-file://):", absPath, err);
-      return;
-    }
-
+    // let blob: Blob;
+    // try {
+    //   const response = await fetch(`pd-file://${absPath}`);
+    //   if (!response.ok) throw new Error(`pd-file fetch ${response.status}`);
+    //   blob = await response.blob();
+    // } catch (err) {
+    //   console.log("[sync] skipping (unreadable via pd-file://):", absPath, err);
+    //   return;
+    // }
+    const fileRawData = await invoke<Uint8Array<ArrayBuffer>>(
+      "read_local_file",
+      { absPath },
+    );
+    // const blob = new Blob([fileRawData], {type: "application/octet-stream"});
     const filename = absPath.split("/").pop() ?? absPath;
-    const file = new File([blob], filename, { lastModified: stat.mtimeMs });
+    const file = new File([fileRawData], filename, {
+      lastModified: stat.mtimeMs,
+    });
     const metadata = {
       mediaType: guessMimeType(filename),
-      expectedSize: blob.size,
+      expectedSize: file.size,
       modificationTime: new Date(stat.mtimeMs),
     };
 
@@ -198,25 +235,52 @@ export async function handleLocalUpsert(absPath: string, checkStability: boolean
 
     if (existing) {
       try {
-        const uploader = await getFileRevisionUploader(existing.remoteId, metadata);
+        const uploader = await getFileRevisionUploader(
+          existing.remoteId,
+          metadata,
+        );
         const controller = await uploader.uploadFromFile(file, [], () => {});
         ({ nodeUid, nodeRevisionUid } = await controller.completion());
         markUploaded(nodeUid);
-        console.log("[sync] uploaded revision:", absPath, "→", nodeUid, "rev:", nodeRevisionUid);
+        console.log(
+          "[sync] uploaded revision:",
+          absPath,
+          "→",
+          nodeUid,
+          "rev:",
+          nodeRevisionUid,
+        );
       } catch (err) {
         const msg = String(err);
-        if (msg.includes("not enabled for Documents") || msg.includes("Revision is currently")) {
-          console.log("[sync] skipping Docs node (revision upload not supported):", absPath);
+        if (
+          msg.includes("not enabled for Documents") ||
+          msg.includes("Revision is currently")
+        ) {
+          console.log(
+            "[sync] skipping Docs node (revision upload not supported):",
+            absPath,
+          );
           return;
         }
         throw err;
       }
     } else {
-      const uploader = await getFileUploader(targetFolderUid, filename, metadata);
+      const uploader = await getFileUploader(
+        targetFolderUid,
+        filename,
+        metadata,
+      );
       const controller = await uploader.uploadFromFile(file, [], () => {});
       ({ nodeUid, nodeRevisionUid } = await controller.completion());
       markUploaded(nodeUid);
-      console.log("[sync] uploaded new file:", absPath, "→", nodeUid, "rev:", nodeRevisionUid);
+      console.log(
+        "[sync] uploaded new file:",
+        absPath,
+        "→",
+        nodeUid,
+        "rev:",
+        nodeRevisionUid,
+      );
     }
 
     await invoke("upsert_file_state", {
@@ -224,7 +288,7 @@ export async function handleLocalUpsert(absPath: string, checkStability: boolean
       localPath: absPath,
       etag: nodeRevisionUid,
       modifiedAt: stat.mtimeMs,
-      sizeBytes: blob.size,
+      sizeBytes: file.size,
       syncState: "synced",
     });
 
