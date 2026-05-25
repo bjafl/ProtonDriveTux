@@ -36,13 +36,12 @@ export function UnlockForm({
 
   useEffect(() => {
     if (authError) {
-      console.error(authError); //TODO
+      setError(authError.message);
     }
   }, [authError]);
 
   const handleLogout = async () => {
     await logout();
-    window.location.reload();
   };
 
   return (

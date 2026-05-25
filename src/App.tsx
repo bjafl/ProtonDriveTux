@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { LoginForm } from "./components/LoginForm";
 import { Onboarding, isOnboardingNeeded } from "./components/Onboarding";
 import { Dashboard } from "./components/Dashboard";
@@ -21,10 +21,10 @@ export function App() {
   } = useAuth();
   const { t } = useLang();
 
-  const handleSessionExpired = async () => {
+  const handleSessionExpired = useCallback(async () => {
     await logout();
     setAppState("loggedOut");
-  };
+  }, [logout]);
 
   useEffect(() => {
     if (authState === "loading" || authState === "refreshing") return;
@@ -33,7 +33,7 @@ export function App() {
       return;
     }
     if (authError?.type === "expired") {
-      handleSessionExpired();
+      void handleSessionExpired();
       return;
     }
     if (!keyPassword) {
@@ -43,7 +43,7 @@ export function App() {
     isOnboardingNeeded().then((needed) =>
       setAppState(needed ? "onboarding" : "ready"),
     );
-  }, [authState, loggedIn, tokens, keyPassword, authError]);
+  }, [authState, loggedIn, tokens, keyPassword, authError, handleSessionExpired]);
 
   const goToNextState = async () => {
     setAppState((await isOnboardingNeeded()) ? "onboarding" : "ready");

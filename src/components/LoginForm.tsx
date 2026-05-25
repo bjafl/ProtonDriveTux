@@ -66,14 +66,14 @@ export function LoginForm({ onLoginSuccess }: Props) {
     } else if (loginState === "loggedIn") {
       onLoginSuccess();
     }
-  }, [loginState, authError]);
+  }, [loginState, authError, hvToken, authHvMethods, openCaptchaWindow, onLoginSuccess, t]);
 
   // Submit captcha solution back to auth hook
   useEffect(() => {
     if (solvedCaptchaToken) {
       retryWithCaptcha(solvedCaptchaToken);
     }
-  }, [solvedCaptchaToken]);
+  }, [solvedCaptchaToken, retryWithCaptcha]);
 
   const handleCredentials = (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -82,28 +82,18 @@ export function LoginForm({ onLoginSuccess }: Props) {
     startLogin(username, password);
   };
 
-  const handleTotp = async (e: React.FormEvent) => {
+  const handleTotp = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
-    try {
-      await submitTotp(totp);
-    } catch (err: unknown) {
-      setError(String(err));
-      setLoading(false);
-    }
+    void submitTotp(totp);
   };
 
-  const handleMailboxPassword = async (e: React.FormEvent) => {
+  const handleMailboxPassword = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
-    try {
-      await submitMailboxPassword(mailboxPassword);
-    } catch (err: unknown) {
-      setError(String(err));
-      setLoading(false);
-    }
+    void submitMailboxPassword(mailboxPassword);
   };
 
   const handleCaptchaBack = () => {
