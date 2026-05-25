@@ -109,3 +109,165 @@ describe("useAuth — refresh on mount", () => {
     expect(result.current.keyPassword).toBeUndefined();
   });
 });
+
+// --- Task 3: startLogin state machine tests ---
+
+const LOGIN_RESULT_BASE = {
+  uid: "uid1",
+  accessToken: "at1",
+  refreshToken: "rt1",
+  userId: "usr1",
+  twoFactorRequired: false,
+  dualPasswordMode: false,
+};
+
+describe("useAuth — startLogin", () => {
+  it("transitions loginStarted → loggedIn for a straight login", async () => {
+    vi.mocked(getSessionTokens).mockResolvedValue(null);
+    vi.mocked(apiStartLogin).mockResolvedValue(LOGIN_RESULT_BASE);
+    vi.mocked(deriveKeyPassword).mockResolvedValue("kp1");
+    vi.mocked(initDriveClient).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.state).toBe("loggedOut"));
+
+    act(() => { result.current.startLogin("user@proton.me", "pass"); });
+    expect(result.current.state).toBe("loginStarted");
+
+    await waitFor(() => expect(result.current.state).toBe("loggedIn"));
+    expect(result.current.loggedIn).toBe(true);
+    expect(result.current.tokens?.accessToken).toBe("at1");
+    expect(result.current.keyPassword).toBe("kp1");
+  });
+
+  it("transitions to pendingTotp when 2FA is required", async () => {
+    vi.mocked(getSessionTokens).mockResolvedValue(null);
+    vi.mocked(apiStartLogin).mockResolvedValue({
+      ...LOGIN_RESULT_BASE,
+      twoFactorRequired: true,
+    });
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.state).toBe("loggedOut"));
+
+    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    expect(result.current.state).toBe("pendingTotp");
+  });
+
+  it("transitions to pendingDualPassword when dualPasswordMode is true", async () => {
+    vi.mocked(getSessionTokens).mockResolvedValue(null);
+    vi.mocked(apiStartLogin).mockResolvedValue({
+      ...LOGIN_RESULT_BASE,
+      dualPasswordMode: true,
+    });
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.state).toBe("loggedOut"));
+
+    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    expect(result.current.state).toBe("pendingDualPassword");
+  });
+
+  it("transitions to pendingHv and exposes hvToken/hvMethods", async () => {
+    vi.mocked(getSessionTokens).mockResolvedValue(null);
+    vi.mocked(apiStartLogin).mockRejectedValue(
+      new HumanVerificationError("hv-tok-123", ["captcha"]),
+    );
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.state).toBe("loggedOut"));
+
+    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    expect(result.current.state).toBe("pendingHv");
+    expect(result.current.hvToken).toBe("hv-tok-123");
+    expect(result.current.hvMethods).toEqual(["captcha"]);
+  });
+
+  it("sets state to error on unexpected login failure", async () => {
+    vi.mocked(getSessionTokens).mockResolvedValue(null);
+    vi.mocked(apiStartLogin).mockRejectedValue(new Error("network failure"));
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.state).toBe("loggedOut"));
+
+    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    expect(result.current.state).toBe("error");
+    expect(result.current.error?.message).toContain("network failure");
+  });
+});
+
+// --- Task 4: submitTotp, submitMailboxPassword, retryWithCaptcha tests ---
+
+describe("useAuth — submitTotp", () => {
+  it("completes login after TOTP: pendingTotp → loggedIn", async () => {
+    vi.mocked(getSessionTokens).mockResolvedValue(null);
+    vi.mocked(apiStartLogin).mockResolvedValue({
+      ...LOGIN_RESULT_BASE,
+      twoFactorRequired: true,
+    });
+    vi.mocked(apiSubmitTotp).mockResolvedValue(undefined);
+    vi.mocked(deriveKeyPassword).mockResolvedValue("kp1");
+    vi.mocked(initDriveClient).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.state).toBe("loggedOut"));
+    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    expect(result.current.state).toBe("pendingTotp");
+
+    await act(async () => { await result.current.submitTotp("123456"); });
+    expect(result.current.state).toBe("loggedIn");
+    expect(result.current.keyPassword).toBe("kp1");
+  });
+});
+
+describe("useAuth — submitMailboxPassword", () => {
+  it("completes login after mailbox password: pendingDualPassword → loggedIn", async () => {
+    vi.mocked(getSessionTokens).mockResolvedValue(null);
+    vi.mocked(apiStartLogin).mockResolvedValue({
+      ...LOGIN_RESULT_BASE,
+      dualPasswordMode: true,
+    });
+    vi.mocked(deriveKeyPassword).mockResolvedValue("kp-mailbox");
+    vi.mocked(initDriveClient).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.state).toBe("loggedOut"));
+    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    expect(result.current.state).toBe("pendingDualPassword");
+
+    await act(async () => { await result.current.submitMailboxPassword("mailbox-pass"); });
+    expect(result.current.state).toBe("loggedIn");
+    expect(result.current.keyPassword).toBe("kp-mailbox");
+    // Verify mailbox password was used for key derivation, not login password
+    expect(vi.mocked(deriveKeyPassword)).toHaveBeenCalledWith(
+      "mailbox-pass",
+      "uid1",
+      "at1",
+    );
+  });
+});
+
+describe("useAuth — retryWithCaptcha", () => {
+  it("retries login with captcha token and succeeds", async () => {
+    vi.mocked(getSessionTokens).mockResolvedValue(null);
+    vi.mocked(apiStartLogin).mockRejectedValue(
+      new HumanVerificationError("hv-tok", ["captcha"]),
+    );
+    vi.mocked(startLoginWithCaptcha).mockResolvedValue(LOGIN_RESULT_BASE);
+    vi.mocked(deriveKeyPassword).mockResolvedValue("kp1");
+    vi.mocked(initDriveClient).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.state).toBe("loggedOut"));
+    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    expect(result.current.state).toBe("pendingHv");
+
+    await act(async () => { await result.current.retryWithCaptcha("solved-captcha-token"); });
+    expect(result.current.state).toBe("loggedIn");
+    expect(vi.mocked(startLoginWithCaptcha)).toHaveBeenCalledWith(
+      "user@proton.me",
+      "pass",
+      "solved-captcha-token",
+    );
+  });
+});
