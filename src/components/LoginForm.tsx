@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-import { HumanVerificationError, submitTotp } from "../lib/auth";
+import { useEffect, useState } from "react";
 import { useLang } from "../lib/i18n";
 import { useTheme } from "../lib/theme";
 import { useAuth } from "../hooks/useAuth";
@@ -16,148 +15,101 @@ export function LoginForm({ onLoginSuccess }: Props) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [totp, setTotp] = useState("");
-  const [partial, setPartial] = useState<Partial2FA | null>(null);
+  const [mailboxPassword, setMailboxPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [hvMethods, setHvMethods] = useState<string[]>([]);
-  const { startLogin, state: loginState } = useAuth();
+
+  const {
+    startLogin,
+    submitTotp,
+    submitMailboxPassword,
+    retryWithCaptcha,
+    state: loginState,
+    error: authError,
+    hvToken,
+    hvMethods: authHvMethods,
+  } = useAuth();
   const { t, toggleLang } = useLang();
   const { theme, toggleTheme } = useTheme();
   const {
     openCaptchaWindow,
     closeCaptchaWindow,
-    state: CaptchaState,
     solvedToken: solvedCaptchaToken,
-    error: CaptchaError,
   } = useHumanVerification(theme);
 
-  const handleCredentials = async (
-    e: React.SyntheticEvent<HTMLFormElement>,
-  ) => {
+  // Drive UI state from auth state machine
+  useEffect(() => {
+    if (loginState === "loginStarted" || loginState === "pendingSrp") {
+      setLoading(true);
+      setStatus(t.loggingIn);
+      setError(null);
+    } else if (loginState === "pendingTotp") {
+      setStep("totp");
+      setLoading(false);
+      setStatus(null);
+    } else if (loginState === "pendingDualPassword") {
+      setStep("mailbox");
+      setLoading(false);
+      setStatus(null);
+    } else if (loginState === "pendingHv" && hvToken && authHvMethods) {
+      setHvMethods(authHvMethods);
+      setStep("captcha");
+      setLoading(false);
+      setStatus(null);
+      openCaptchaWindow(hvToken, authHvMethods);
+    } else if (loginState === "error" && authError) {
+      setError(authError.message);
+      setLoading(false);
+      setStatus(null);
+    } else if (loginState === "loggedIn") {
+      onLoginSuccess();
+    }
+  }, [loginState, authError]);
+
+  // Submit captcha solution back to auth hook
+  useEffect(() => {
+    if (solvedCaptchaToken) {
+      retryWithCaptcha(solvedCaptchaToken);
+    }
+  }, [solvedCaptchaToken]);
+
+  const handleCredentials = (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
     setStatus(null);
     startLogin(username, password);
   };
 
-  useEffect(() => {
-    if (loginState === "loginStarted") {
-      setLoading(true);
-      setStatus(t.loggingIn);
-    } else if (loginState === "pendingTotp") {
-      setStep("totp");
-      setLoading(false);
-      setStatus(null);
-    } else if (loginState == "pendingDualPassword") {
-      setStep("mailbox");
-      setLoading(false);
-      setStatus(null);
-    } else if (loginState == "pendingHv") {
-      setLoading(false);
-      setStatus(null);
-      setHvMethods(err.methods);
-      await openCaptchaWindow(err.hvToken, err.methods);
-    }
-  });
-
-  //     if (result.twoFactorRequired) {
-  //       setPartial({
-  //         uid: result.uid,
-  //         accessToken: result.accessToken,
-  //         refreshToken: result.refreshToken,
-  //         userId: result.userId,
-  //       });
-  //       setStep("totp");
-  //       setLoading(false);
-  //       setStatus(null);
-  //       return;
-  //     }
-
-  //     if (result.dualPasswordMode) {
-  //       setPartial({
-  //         uid: result.uid,
-  //         accessToken: result.accessToken,
-  //         refreshToken: result.refreshToken,
-  //         userId: result.userId,
-  //       });
-  //       setStep("mailbox");
-  //       setLoading(false);
-  //       setStatus(null);
-  //       return;
-  //     }
-
-  //     await initSdk(
-  //       result.uid,
-  //       result.accessToken,
-  //       result.refreshToken,
-  //       result.userId,
-  //       password,
-  //     );
-  //     onLoginSuccess();
-  //   } catch (err: unknown) {
-  //     if (err instanceof HumanVerificationError) {
-  //       setLoading(false);
-  //       setStatus(null);
-  //       setHvMethods(err.methods);
-  //       await openCaptchaWindow(err.hvToken, err.methods);
-  //       return;
-  //     }
-  //     setError(String(err));
-  //   } finally {
-  //     setLoading(false);
-  //     setStatus(null);
-  //   }
-  // };
-
   const handleTotp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!partial) return;
     setError(null);
     setLoading(true);
     try {
-      await submitTotp(
-        partial.uid,
-        partial.accessToken,
-        partial.refreshToken,
-        partial.userId,
-        totp,
-      );
-      await initSdk(
-        partial.uid,
-        partial.accessToken,
-        partial.refreshToken,
-        partial.userId,
-        password,
-      );
-      onLoginSuccess();
+      await submitTotp(totp);
     } catch (err: unknown) {
       setError(String(err));
-    } finally {
       setLoading(false);
     }
   };
 
-  const [mailboxPassword, setMailboxPassword] = useState("");
   const handleMailboxPassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!partial) return;
     setError(null);
     setLoading(true);
     try {
-      await initSdk(
-        partial.uid,
-        partial.accessToken,
-        partial.refreshToken,
-        partial.userId,
-        mailboxPassword,
-      );
-      onLoginSuccess();
+      await submitMailboxPassword(mailboxPassword);
     } catch (err: unknown) {
       setError(String(err));
-    } finally {
       setLoading(false);
     }
+  };
+
+  const handleCaptchaBack = () => {
+    closeCaptchaWindow();
+    setStep("credentials");
+    setError(null);
   };
 
   return (
@@ -266,7 +218,6 @@ export function LoginForm({ onLoginSuccess }: Props) {
                   setStep("credentials");
                   setTotp("");
                   setError(null);
-                  setPartial(null);
                 }}
               >
                 {t.back}
@@ -302,7 +253,6 @@ export function LoginForm({ onLoginSuccess }: Props) {
                   setStep("credentials");
                   setMailboxPassword("");
                   setError(null);
-                  setPartial(null);
                 }}
               >
                 {t.back}
