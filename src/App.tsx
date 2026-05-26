@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { LoginForm } from "./components/LoginForm";
+import { LoginFrame } from "./components/LoginFrame";
 import { Onboarding, isOnboardingNeeded } from "./components/Onboarding";
 import { Dashboard } from "./components/Dashboard";
 import { useLang } from "./lib/i18n";
-import { UnlockForm } from "./components/UnlockForm";
+import { UnlockFrame } from "./components/UnlockFrame";
 import "./App.css";
-import { useAuth } from "./hooks/useAuth";
+import { useAuthContext } from "./lib/authContext";
 
 type AppState = "loading" | "unlocking" | "loggedOut" | "onboarding" | "ready";
 
@@ -18,7 +18,7 @@ export function App() {
     keyPassword,
     error: authError,
     logout,
-  } = useAuth();
+  } = useAuthContext();
   const { t } = useLang();
 
   const handleSessionExpired = useCallback(async () => {
@@ -43,7 +43,14 @@ export function App() {
     isOnboardingNeeded().then((needed) =>
       setAppState(needed ? "onboarding" : "ready"),
     );
-  }, [authState, loggedIn, tokens, keyPassword, authError, handleSessionExpired]);
+  }, [
+    authState,
+    loggedIn,
+    tokens,
+    keyPassword,
+    authError,
+    handleSessionExpired,
+  ]);
 
   const goToNextState = async () => {
     setAppState((await isOnboardingNeeded()) ? "onboarding" : "ready");
@@ -51,13 +58,13 @@ export function App() {
 
   if (appState === "loading") return <div className="loading">{t.loading}</div>;
   if (appState === "loggedOut") {
-    return <LoginForm onLoginSuccess={goToNextState} />;
+    return <LoginFrame onLoginSuccess={goToNextState} />;
   }
   if (appState === "onboarding") {
     return <Onboarding onComplete={() => setAppState("ready")} />;
   }
   if (appState === "unlocking") {
-    return <UnlockForm onUnlocked={goToNextState} />;
+    return <UnlockFrame onUnlocked={goToNextState} />;
   }
 
   return (

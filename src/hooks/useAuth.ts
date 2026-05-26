@@ -11,6 +11,7 @@ import {
   releaseDriveClient,
   deriveKeyPassword,
   initDriveClient,
+  isDriveClientInitialized,
 } from "../lib/drive";
 import { AuthExpiredError, HumanVerificationError } from "../lib/auth";
 import {
@@ -138,6 +139,15 @@ export function useAuth() {
     if (refreshTokensFlag) {
       await _refreshTokens();
     }
+    // When both tokens and key password are restored from keyring (remember unlock),
+    // initialize the Drive client — it is not initialized during the refresh flow otherwise.
+    const t = tokensRef.current;
+    const kp = keyPasswordRef.current;
+    if (t && kp && !isDriveClientInitialized()) {
+      await initDriveClient({ ...t, keyPassword: kp }).catch((e: unknown) => {
+        console.error("[auth] Failed to init drive client on session restore:", e);
+      });
+    }
   }
 
   const _refreshTokens = useCallback(async (): Promise<void> => {
@@ -185,7 +195,14 @@ export function useAuth() {
       if (error instanceof AuthExpiredError && !retried) {
         console.log("[auth] access token expired during key derivation — refreshing");
         await _refreshTokens();
+        if (!tokensRef.current) return false; // refresh token also expired → logout already called
         return _deriveKeyPassword(password, remember, true);
+      }
+      if (error instanceof AuthExpiredError) {
+        // Retry also got 403 — session is beyond saving; logout triggers redirect via !loggedIn
+        _updateError({ type: "expired", error });
+        await logout();
+        return false;
       }
       _updateError({ type: "loginError", error });
       return false;
@@ -350,6 +367,9 @@ export function useAuth() {
   const unlock = useCallback(
     async (password: string, rememberPass = false): Promise<boolean> => {
       await _refreshTokens();
+      // _refreshTokens may have called logout() on AuthExpiredError, clearing tokens.
+      // In that case return false — App will redirect to login via the auth state update.
+      if (!tokensRef.current) return false;
       return _deriveKeyPassword(password, rememberPass);
     },
     [],

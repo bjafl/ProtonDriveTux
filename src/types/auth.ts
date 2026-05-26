@@ -22,6 +22,8 @@ export interface AuthInfo extends AuthStatus {
   tokens?: SessionTokens;
   keyPassword?: string;
   error?: AuthErrorInfo;
+  hvToken?: string;
+  hvMethods?: string[];
 }
 
 export interface SessionTokens {

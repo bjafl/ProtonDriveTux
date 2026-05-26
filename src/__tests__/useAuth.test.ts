@@ -8,15 +8,16 @@ vi.mock("../lib/ipcApi", () => ({
   getKeyPassword: vi.fn(),
   getSessionTokens: vi.fn(),
   getAuthStatus: vi.fn(),
-  logout: vi.fn(),
+  logout: vi.fn().mockResolvedValue(undefined),
   storeKeyPassword: vi.fn(),
 }));
 
 vi.mock("../lib/drive", () => ({
   deriveKeyPassword: vi.fn(),
-  initDriveClient: vi.fn(),
+  initDriveClient: vi.fn().mockResolvedValue(undefined),
   releaseDriveClient: vi.fn(),
   refreshTokens: vi.fn(),
+  isDriveClientInitialized: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock("../lib/auth", () => ({
@@ -50,7 +51,8 @@ import {
   submitTotp as apiSubmitTotp,
   HumanVerificationError,
 } from "../lib/auth";
-import { deriveKeyPassword, initDriveClient } from "../lib/drive";
+import { deriveKeyPassword, initDriveClient, isDriveClientInitialized, refreshTokens as apiRefreshTokens } from "../lib/drive";
+import { AuthExpiredError } from "../lib/auth";
 
 const TOKENS = {
   uid: "uid1",
@@ -99,6 +101,31 @@ describe("useAuth — refresh on mount", () => {
     expect(result.current.userId).toBe("usr1");
   });
 
+  it("initializes the drive client when tokens and key password are both restored (remember unlock)", async () => {
+    vi.mocked(getSessionTokens).mockResolvedValue(TOKENS);
+    vi.mocked(getKeyPassword).mockResolvedValue("kp-remembered");
+    vi.mocked(isDriveClientInitialized).mockReturnValue(false);
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.state).toBe("loggedIn"));
+
+    expect(vi.mocked(initDriveClient)).toHaveBeenCalledWith(
+      expect.objectContaining({ uid: "uid1", keyPassword: "kp-remembered" }),
+    );
+  });
+
+  it("skips drive client init when key password is absent (unlock form shown instead)", async () => {
+    vi.mocked(getSessionTokens).mockResolvedValue(TOKENS);
+    vi.mocked(getKeyPassword).mockResolvedValue(null);
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.state).toBe("loggedIn"));
+
+    // initDriveClient should NOT have been called during refresh
+    // (it will be called later when the user submits the unlock form)
+    expect(vi.mocked(initDriveClient)).not.toHaveBeenCalled();
+  });
+
   it("transitions to loggedIn with tokens but no keyPassword (will unlock)", async () => {
     vi.mocked(getSessionTokens).mockResolvedValue(TOKENS);
     vi.mocked(getKeyPassword).mockResolvedValue(null);
@@ -131,7 +158,9 @@ describe("useAuth — startLogin", () => {
     const { result } = renderHook(() => useAuth());
     await waitFor(() => expect(result.current.state).toBe("loggedOut"));
 
-    act(() => { result.current.startLogin("user@proton.me", "pass"); });
+    act(() => {
+      result.current.startLogin("user@proton.me", "pass");
+    });
     expect(result.current.state).toBe("loginStarted");
 
     await waitFor(() => expect(result.current.state).toBe("loggedIn"));
@@ -150,7 +179,9 @@ describe("useAuth — startLogin", () => {
     const { result } = renderHook(() => useAuth());
     await waitFor(() => expect(result.current.state).toBe("loggedOut"));
 
-    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    await act(async () => {
+      await result.current.startLogin("user@proton.me", "pass");
+    });
     expect(result.current.state).toBe("pendingTotp");
   });
 
@@ -164,7 +195,9 @@ describe("useAuth — startLogin", () => {
     const { result } = renderHook(() => useAuth());
     await waitFor(() => expect(result.current.state).toBe("loggedOut"));
 
-    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    await act(async () => {
+      await result.current.startLogin("user@proton.me", "pass");
+    });
     expect(result.current.state).toBe("pendingDualPassword");
   });
 
@@ -177,7 +210,9 @@ describe("useAuth — startLogin", () => {
     const { result } = renderHook(() => useAuth());
     await waitFor(() => expect(result.current.state).toBe("loggedOut"));
 
-    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    await act(async () => {
+      await result.current.startLogin("user@proton.me", "pass");
+    });
     expect(result.current.state).toBe("pendingHv");
     expect(result.current.hvToken).toBe("hv-tok-123");
     expect(result.current.hvMethods).toEqual(["captcha"]);
@@ -190,7 +225,9 @@ describe("useAuth — startLogin", () => {
     const { result } = renderHook(() => useAuth());
     await waitFor(() => expect(result.current.state).toBe("loggedOut"));
 
-    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    await act(async () => {
+      await result.current.startLogin("user@proton.me", "pass");
+    });
     expect(result.current.state).toBe("error");
     expect(result.current.error?.message).toContain("network failure");
   });
@@ -211,10 +248,14 @@ describe("useAuth — submitTotp", () => {
 
     const { result } = renderHook(() => useAuth());
     await waitFor(() => expect(result.current.state).toBe("loggedOut"));
-    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    await act(async () => {
+      await result.current.startLogin("user@proton.me", "pass");
+    });
     expect(result.current.state).toBe("pendingTotp");
 
-    await act(async () => { await result.current.submitTotp("123456"); });
+    await act(async () => {
+      await result.current.submitTotp("123456");
+    });
     expect(result.current.state).toBe("loggedIn");
     expect(result.current.keyPassword).toBe("kp1");
     expect(vi.mocked(apiSubmitTotp)).toHaveBeenCalledWith(
@@ -236,10 +277,14 @@ describe("useAuth — submitTotp", () => {
 
     const { result } = renderHook(() => useAuth());
     await waitFor(() => expect(result.current.state).toBe("loggedOut"));
-    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    await act(async () => {
+      await result.current.startLogin("user@proton.me", "pass");
+    });
     expect(result.current.state).toBe("pendingTotp");
 
-    await act(async () => { await result.current.submitTotp("000000"); });
+    await act(async () => {
+      await result.current.submitTotp("000000");
+    });
     expect(result.current.state).toBe("error");
     expect(result.current.error?.message).toContain("invalid TOTP");
   });
@@ -257,17 +302,21 @@ describe("useAuth — submitMailboxPassword", () => {
 
     const { result } = renderHook(() => useAuth());
     await waitFor(() => expect(result.current.state).toBe("loggedOut"));
-    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    await act(async () => {
+      await result.current.startLogin("user@proton.me", "pass");
+    });
     expect(result.current.state).toBe("pendingDualPassword");
 
-    await act(async () => { await result.current.submitMailboxPassword("mailbox-pass"); });
+    await act(async () => {
+      await result.current.submitMailboxPassword("mailbox-pass");
+    });
     expect(result.current.state).toBe("loggedIn");
     expect(result.current.keyPassword).toBe("kp-mailbox");
     // Verify mailbox password was used for key derivation, not login password
     expect(vi.mocked(deriveKeyPassword)).toHaveBeenCalledWith(
       "mailbox-pass",
-      "uid1",
       "at1",
+      "uid1",
     );
   });
 
@@ -277,16 +326,66 @@ describe("useAuth — submitMailboxPassword", () => {
       ...LOGIN_RESULT_BASE,
       dualPasswordMode: true,
     });
-    vi.mocked(deriveKeyPassword).mockRejectedValue(new Error("wrong mailbox password"));
+    vi.mocked(deriveKeyPassword).mockRejectedValue(
+      new Error("wrong mailbox password"),
+    );
 
     const { result } = renderHook(() => useAuth());
     await waitFor(() => expect(result.current.state).toBe("loggedOut"));
-    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    await act(async () => {
+      await result.current.startLogin("user@proton.me", "pass");
+    });
     expect(result.current.state).toBe("pendingDualPassword");
 
-    await act(async () => { await result.current.submitMailboxPassword("bad-pass"); });
+    await act(async () => {
+      await result.current.submitMailboxPassword("bad-pass");
+    });
     expect(result.current.state).toBe("error");
     expect(result.current.error?.message).toContain("wrong mailbox password");
+  });
+});
+
+describe("useAuth — unlock", () => {
+  it("returns false and transitions to loggedOut when the refresh token is expired", async () => {
+    vi.mocked(getSessionTokens).mockResolvedValue(TOKENS);
+    vi.mocked(getKeyPassword).mockResolvedValue(null);
+    vi.mocked(apiRefreshTokens).mockRejectedValue(new AuthExpiredError(401));
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.state).toBe("loggedIn"));
+
+    let unlockResult: boolean | undefined;
+    await act(async () => {
+      unlockResult = await result.current.unlock("password");
+    });
+
+    expect(unlockResult).toBe(false);
+    expect(result.current.state).toBe("loggedOut");
+    expect(result.current.loggedIn).toBe(false);
+  });
+
+  it("returns false and transitions to loggedOut when access token is expired on retry during key derivation", async () => {
+    vi.mocked(getSessionTokens).mockResolvedValue(TOKENS);
+    vi.mocked(getKeyPassword).mockResolvedValue(null);
+    // Token refresh succeeds (tokens are still present), but key derivation keeps failing with 403
+    vi.mocked(apiRefreshTokens).mockResolvedValue({
+      accessToken: "at-refreshed",
+      refreshToken: "rt-refreshed",
+    });
+    vi.mocked(deriveKeyPassword).mockRejectedValue(new AuthExpiredError(403));
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.state).toBe("loggedIn"));
+
+    let unlockResult: boolean | undefined;
+    await act(async () => {
+      unlockResult = await result.current.unlock("password");
+    });
+
+    expect(unlockResult).toBe(false);
+    // logout() clears tokens → state resolves to loggedOut
+    expect(result.current.state).toBe("loggedOut");
+    expect(result.current.loggedIn).toBe(false);
   });
 });
 
@@ -302,10 +401,14 @@ describe("useAuth — retryWithCaptcha", () => {
 
     const { result } = renderHook(() => useAuth());
     await waitFor(() => expect(result.current.state).toBe("loggedOut"));
-    await act(async () => { await result.current.startLogin("user@proton.me", "pass"); });
+    await act(async () => {
+      await result.current.startLogin("user@proton.me", "pass");
+    });
     expect(result.current.state).toBe("pendingHv");
 
-    await act(async () => { await result.current.retryWithCaptcha("solved-captcha-token"); });
+    await act(async () => {
+      await result.current.retryWithCaptcha("solved-captcha-token");
+    });
     expect(result.current.state).toBe("loggedIn");
     expect(vi.mocked(startLoginWithCaptcha)).toHaveBeenCalledWith(
       "user@proton.me",

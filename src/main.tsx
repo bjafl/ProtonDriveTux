@@ -4,6 +4,7 @@ import { App } from "./App";
 import { TrayPopup } from "./components/TrayPopup";
 import { ThemeProvider } from "./lib/theme";
 import { LangProvider } from "./lib/i18n";
+import { AuthProvider } from "./lib/authContext";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const isTrayPopup = getCurrentWindow().label === "tray-popup";
@@ -17,7 +18,9 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
         </LangProvider>
       ) : (
         <LangProvider>
-          <App />
+          <AuthProvider>
+            <App />
+          </AuthProvider>
         </LangProvider>
       )}
     </ThemeProvider>
