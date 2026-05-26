@@ -22,6 +22,7 @@ const DEFAULT_HANDLERS: Record<string, IpcHandler> = {
   update_tray_status: () => null,
   list_local_dir: () => [] as string[],
   list_dir_recursive: () => [],
+  read_local_file: () => new Uint8Array(0),
 };
 
 /** Call in beforeEach(). Call teardownIpcMocks() in afterEach(). */

@@ -157,12 +157,6 @@ describe("handleLocalUpsert", () => {
   });
 
   it("calls getFileUploader for a new file (no DB entry) and upserts DB", async () => {
-    const fileBytes = new Blob(["hello"]);
-    vi.mocked(fetch).mockResolvedValue({
-      ok: true,
-      blob: () => Promise.resolve(fileBytes),
-    } as Response);
-
     const mockController = {
       completion: vi.fn().mockResolvedValue({ nodeUid: "new-uid", nodeRevisionUid: "new-rev" }),
     };
@@ -174,6 +168,7 @@ describe("handleLocalUpsert", () => {
     setupIpcMocks({
       stat_local_file: () => ({ mtimeMs: 2000, sizeBytes: 5, isDir: false }),
       get_file_state_by_local_path: () => null,
+      read_local_file: () => new Uint8Array(5),
       upsert_file_state: (args) => {
         upsertedState = args;
         return null;
@@ -203,12 +198,6 @@ describe("handleLocalUpsert", () => {
   });
 
   it("calls getFileRevisionUploader for an existing file", async () => {
-    const fileBytes = new Blob(["updated"]);
-    vi.mocked(fetch).mockResolvedValue({
-      ok: true,
-      blob: () => Promise.resolve(fileBytes),
-    } as Response);
-
     const mockController = {
       completion: vi.fn().mockResolvedValue({ nodeUid: "node-1", nodeRevisionUid: "rev-2" }),
     };
@@ -227,6 +216,7 @@ describe("handleLocalUpsert", () => {
         sizeBytes: 5,
         syncState: "synced",
       }),
+      read_local_file: () => new Uint8Array(7),
       upsert_file_state: (args) => {
         upsertedRevState = args;
         return null;
