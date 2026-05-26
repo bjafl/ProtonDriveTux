@@ -173,6 +173,37 @@ requirement.
 
 ---
 
+## Known Limitations & Edge Cases
+
+### Event anchor advancement
+`persistEventAnchor` is called in the `handleDriveEvent` callback immediately after routing
+the event to the CoalescingQueue — before the download completes. If the app crashes mid-download,
+that event's anchor is already advanced and the event will not replay on restart. The file will
+be picked up by the next 5-minute `triggerFullSync`. Accepted trade-off for simplicity.
+
+### Pause behavior
+`_paused` is checked at the top of `handleDriveEvent` and `handleLocalChange` (at enqueue time).
+Tasks already in the CoalescingQueue when pause is requested will still execute. To stop
+mid-queue, `_paused` is also checked at the start of `handleRemoteNodeUpdate` and
+`handleLocalUpsert` (at execution time). This means pause takes effect within one in-flight
+operation's completion rather than instantly.
+
+### `TreeRefresh` / `FastForward` events
+These trigger a full `initialSyncFolder()` re-scan, not a single-node download. They bypass
+the CoalescingQueue and call `onFullRefresh()` directly. The `_fullSyncInProgress` guard
+prevents stacking: if a full sync is already running when a `TreeRefresh` arrives, the
+event is acknowledged (anchor advanced) but the redundant re-scan is skipped.
+
+### Batch vs live overlap
+`triggerFullSync` (periodic) uses `downloadSemaphore.run()` directly; simultaneous live events
+use `downloadQueue` (which wraps the same semaphore). They do not share per-key deduplication.
+A live event arriving for a node that is also being downloaded in a concurrent full sync could
+result in two downloads of the same file. This is safe: `streamDownloadToPath` writes to
+`.pd-tmp` then renames atomically, and the DB upsert is idempotent. Accepted as a known
+low-frequency edge case.
+
+---
+
 ## Testing
 
 ### `concurrency.test.ts` (new)
