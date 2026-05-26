@@ -31,7 +31,7 @@ class NoTokensError extends Error {}
 
 interface HvData {
   hvToken: string;
-  methods: string[];
+  hvMethods: string[];
 }
 
 interface Credentials {
@@ -44,19 +44,20 @@ export function useAuth() {
   const tokensRef = useRef<SessionTokens | null>(null);
   const errorRef = useRef<AuthErrorInfo | null>(null);
   const keyPasswordRef = useRef<string | null>(null);
-  // Starts as "loading"; cleared to null after first refresh completes.
-  const loginStateRef = useRef<LoginState | null>("loading");
+  const loginStateRef = useRef<LoginState | null>("loading"); //For special cases, else state is derived.
   const hvDataRef = useRef<HvData | null>(null);
   const credentialsRef = useRef<Credentials | null>(null);
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
 
-  const [authInfo, setAuthInfo] = useState<
-    AuthInfo & { hvToken?: string; hvMethods?: string[] }
-  >({ loggedIn: false, userId: null, state: "loading" });
+  const [authInfo, setAuthInfo] = useState<AuthInfo>({
+    loggedIn: false,
+    userId: null,
+    state: "loading",
+  });
 
-  function deriveAuthInfo(): AuthInfo & { hvToken?: string; hvMethods?: string[] } {
-    const tokens = tokensRef.current ?? undefined;
-    const error = errorRef.current ?? undefined;
+  function _deriveAuthInfo(): AuthInfo {
+    const tokens = tokensRef.current ? { ...tokensRef.current } : undefined;
+    const error = errorRef.current ? { ...errorRef.current } : undefined;
     const keyPassword = keyPasswordRef.current ?? undefined;
 
     let state: LoginState;
@@ -72,7 +73,7 @@ export function useAuth() {
       state = "loggedOut";
     }
 
-    const hvData = state === "pendingHv" ? hvDataRef.current : null;
+    const hvData = state === "pendingHv" ? { ...hvDataRef.current } : null;
 
     return {
       loggedIn: state === "loggedIn",
@@ -81,9 +82,12 @@ export function useAuth() {
       keyPassword,
       state,
       error,
-      hvToken: hvData?.hvToken,
-      hvMethods: hvData?.methods,
+      ...hvData,
     };
+  }
+
+  function _updateAuthInfoState() {
+    setAuthInfo(_deriveAuthInfo());
   }
 
   function _updateError({
@@ -130,7 +134,8 @@ export function useAuth() {
   }
 
   const _refreshTokens = useCallback(async (): Promise<void> => {
-    if (!tokensRef.current) throw new NoTokensError();
+    if (!tokensRef.current)
+      throw new NoTokensError("Tokens missing - cant't refresh");
     try {
       const refreshed = await apiRefreshTokens(
         tokensRef.current.uid,
@@ -148,48 +153,59 @@ export function useAuth() {
     }
   }, []);
 
-  async function _deriveKeyPassword(
-    password: string,
-    remember = false,
-  ): Promise<boolean> {
-    const tokens = tokensRef.current;
-    if (!tokens) throw new NoTokensError();
-    try {
-      const newKeyPwd = await deriveKeyPassword(
-        password,
-        tokens.uid,
-        tokens.accessToken,
-      );
-      await initDriveClient({ ...tokens, keyPassword: newKeyPwd });
-      if (remember) {
-        await storeKeyPassword(newKeyPwd).catch(console.error);
+  const _deriveKeyPassword = useCallback(
+    async (password: string, remember = false): Promise<boolean> => {
+      console.log("[deriveKeyPwd]", {
+        tokens: { ...tokensRef.current },
+        passwordLen: password.length,
+        remember,
+      });
+      if (!tokensRef.current)
+        throw new NoTokensError("Tokens missing - can't derive keypassword");
+      try {
+        const { uid, accessToken, ...tokensRest } = tokensRef.current;
+        const newKeyPwd = await deriveKeyPassword(password, accessToken, uid);
+        await initDriveClient({
+          keyPassword: newKeyPwd,
+          uid,
+          accessToken,
+          ...tokensRest,
+        });
+        if (remember) {
+          await storeKeyPassword(newKeyPwd).catch(console.error);
+        }
+        keyPasswordRef.current = newKeyPwd;
+        return true;
+      } catch (error: unknown) {
+        if (error instanceof AuthExpiredError) {
+          console.log("[derive keypwd] auth expired");
+          await _refreshTokens();
+          return _deriveKeyPassword(password, remember);
+        }
+        _updateError({ type: "loginError", error });
+        return false;
       }
-      keyPasswordRef.current = newKeyPwd;
-      return true;
-    } catch (error: unknown) {
-      if (error instanceof AuthExpiredError) {
-        await _refreshTokens();
-        return _deriveKeyPassword(password, remember);
-      }
-      _updateError({ type: "loginError", error });
-      return false;
-    }
-  }
+    },
+    [_refreshTokens],
+  );
 
   const refresh = useCallback(
     async ({
       refreshTokens = false,
       keyPassword = false,
-    }: { refreshTokens?: boolean; keyPassword?: boolean } = {}): Promise<void> => {
+    }: {
+      refreshTokens?: boolean;
+      keyPassword?: boolean;
+    } = {}): Promise<void> => {
       if (refreshPromiseRef.current) {
         return refreshPromiseRef.current;
       }
       refreshPromiseRef.current = _doRefresh(refreshTokens, keyPassword);
-      setAuthInfo(deriveAuthInfo());
+      _updateAuthInfoState();
       await refreshPromiseRef.current;
       refreshPromiseRef.current = null;
       loginStateRef.current = null;
-      setAuthInfo(deriveAuthInfo());
+      _updateAuthInfoState();
     },
     [],
   );
@@ -204,7 +220,7 @@ export function useAuth() {
       credentialsRef.current = { username, password, remember };
       errorRef.current = null;
       loginStateRef.current = "loginStarted";
-      setAuthInfo(deriveAuthInfo());
+      _updateAuthInfoState();
       try {
         const result = await apiStartLogin(username, password);
         tokensRef.current = {
@@ -215,70 +231,79 @@ export function useAuth() {
         };
         if (result.twoFactorRequired) {
           loginStateRef.current = "pendingTotp";
-          setAuthInfo(deriveAuthInfo());
+          _updateAuthInfoState();
           return;
         }
         if (result.dualPasswordMode) {
           loginStateRef.current = "pendingDualPassword";
-          setAuthInfo(deriveAuthInfo());
+          _updateAuthInfoState();
           return;
         }
         loginStateRef.current = "pendingSrp";
-        setAuthInfo(deriveAuthInfo());
+        _updateAuthInfoState();
         await _deriveKeyPassword(password, remember);
         loginStateRef.current = null;
-        setAuthInfo(deriveAuthInfo());
+        _updateAuthInfoState();
       } catch (error: unknown) {
         if (error instanceof HumanVerificationError) {
-          hvDataRef.current = { hvToken: error.hvToken, methods: error.methods };
+          hvDataRef.current = {
+            hvToken: error.hvToken,
+            hvMethods: error.methods,
+          };
           loginStateRef.current = "pendingHv";
-          setAuthInfo(deriveAuthInfo());
+          _updateAuthInfoState();
           return;
         }
         _updateError({ type: "loginError", error });
         loginStateRef.current = null;
-        setAuthInfo(deriveAuthInfo());
+        _updateAuthInfoState();
       }
     },
     [],
   );
 
   const submitTotp = useCallback(async (totp: string): Promise<void> => {
-    if (!tokensRef.current) throw new NoTokensError();
+    console.log("[submitTotp]", { tokens: { ...tokensRef.current } });
+    if (!tokensRef.current)
+      throw new NoTokensError("Tokens missing - cant submit totp");
     const { uid, accessToken, refreshToken, userId } = tokensRef.current;
     try {
       await apiSubmitTotp(uid, accessToken, refreshToken, userId, totp);
       loginStateRef.current = "pendingSrp";
-      setAuthInfo(deriveAuthInfo());
+      _updateAuthInfoState();
+      console.log("[submitTotp - after totp ok]", {
+        tokens: { ...tokensRef.current },
+      });
       const creds = credentialsRef.current;
       await _deriveKeyPassword(creds?.password ?? "", creds?.remember ?? false);
       loginStateRef.current = null;
       credentialsRef.current = null;
-      setAuthInfo(deriveAuthInfo());
+      _updateAuthInfoState();
     } catch (error: unknown) {
       _updateError({ type: "loginError", error });
       loginStateRef.current = null;
-      setAuthInfo(deriveAuthInfo());
+      _updateAuthInfoState();
     }
   }, []);
 
   const submitMailboxPassword = useCallback(
     async (password: string): Promise<void> => {
-      if (!tokensRef.current) throw new NoTokensError();
+      if (!tokensRef.current)
+        throw new NoTokensError("Tokens missing - can't submit mailbox pwd");
       try {
         loginStateRef.current = "pendingSrp";
-        setAuthInfo(deriveAuthInfo());
+        _updateAuthInfoState();
         await _deriveKeyPassword(
           password,
           credentialsRef.current?.remember ?? false,
         );
         loginStateRef.current = null;
         credentialsRef.current = null;
-        setAuthInfo(deriveAuthInfo());
+        _updateAuthInfoState();
       } catch (error: unknown) {
         _updateError({ type: "loginError", error });
         loginStateRef.current = null;
-        setAuthInfo(deriveAuthInfo());
+        _updateAuthInfoState();
       }
     },
     [],
@@ -291,9 +316,13 @@ export function useAuth() {
       hvDataRef.current = null;
       errorRef.current = null;
       loginStateRef.current = "loginStarted";
-      setAuthInfo(deriveAuthInfo());
+      _updateAuthInfoState();
       try {
-        const result = await startLoginWithCaptcha(username, password, captchaToken);
+        const result = await startLoginWithCaptcha(
+          username,
+          password,
+          captchaToken,
+        );
         tokensRef.current = {
           uid: result.uid,
           accessToken: result.accessToken,
@@ -302,30 +331,33 @@ export function useAuth() {
         };
         if (result.twoFactorRequired) {
           loginStateRef.current = "pendingTotp";
-          setAuthInfo(deriveAuthInfo());
+          _updateAuthInfoState();
           return;
         }
         if (result.dualPasswordMode) {
           loginStateRef.current = "pendingDualPassword";
-          setAuthInfo(deriveAuthInfo());
+          _updateAuthInfoState();
           return;
         }
         loginStateRef.current = "pendingSrp";
-        setAuthInfo(deriveAuthInfo());
+        _updateAuthInfoState();
         await _deriveKeyPassword(password, remember);
         loginStateRef.current = null;
         credentialsRef.current = null;
-        setAuthInfo(deriveAuthInfo());
+        _updateAuthInfoState();
       } catch (error: unknown) {
         if (error instanceof HumanVerificationError) {
-          hvDataRef.current = { hvToken: error.hvToken, methods: error.methods };
+          hvDataRef.current = {
+            hvToken: error.hvToken,
+            hvMethods: error.methods,
+          };
           loginStateRef.current = "pendingHv";
-          setAuthInfo(deriveAuthInfo());
+          _updateAuthInfoState();
           return;
         }
         _updateError({ type: "loginError", error });
         loginStateRef.current = null;
-        setAuthInfo(deriveAuthInfo());
+        _updateAuthInfoState();
       }
     },
     [],
@@ -348,11 +380,11 @@ export function useAuth() {
       loginStateRef.current = null;
       hvDataRef.current = null;
       credentialsRef.current = null;
-      setAuthInfo(deriveAuthInfo());
+      _updateAuthInfoState();
       return true;
     } catch (error) {
       _updateError({ error });
-      setAuthInfo(deriveAuthInfo());
+      _updateAuthInfoState();
     } finally {
       releaseDriveClient();
     }
@@ -360,8 +392,19 @@ export function useAuth() {
   }, []);
 
   useEffect(() => {
-    refresh();
-  }, []);
+    if (authInfo.state === "loading") {
+      refresh();
+    }
+  }, [authInfo.state]);
+
+  useEffect(() => {
+    if (!authInfo.error) console.log("error cleared");
+    console.log(authInfo.error);
+  }, [authInfo.error]);
+  useEffect(() => {
+    if (!authInfo.state) console.log("state cleared");
+    console.log(authInfo.state);
+  }, [authInfo.state]);
 
   return {
     ...authInfo,
