@@ -155,4 +155,19 @@ describe("CoalescingQueue", () => {
     await queue.flush();
     expect(ran).toBe(true);
   });
+
+  it("serializes different keys at semaphore cap=1", async () => {
+    const sem = new Semaphore(1);
+    const queue = new CoalescingQueue(sem);
+    const order: string[] = [];
+    let releaseA!: () => void;
+    const blockA = new Promise<void>((r) => { releaseA = r; });
+
+    queue.enqueue("a", async () => { await blockA; order.push("a"); });
+    queue.enqueue("b", async () => { order.push("b"); });
+
+    releaseA();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(order).toEqual(["a", "b"]);
+  });
 });

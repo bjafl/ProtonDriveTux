@@ -55,7 +55,9 @@ export class CoalescingQueue {
 
   private _run(key: string, fn: () => Promise<void>): void {
     const p = this.semaphore.run(fn)
-      .catch(() => {}) // swallow rejection; don't propagate
+      .catch((err: unknown) => {
+        console.warn(`[CoalescingQueue] task failed for key "${key}":`, err);
+      })
       .finally(() => {
         this.inFlight.delete(key);
         const nextFn = this.pendingFns.get(key);
@@ -67,7 +69,11 @@ export class CoalescingQueue {
     this.inFlight.set(key, p);
   }
 
-  /** Resolves when all currently in-flight tasks (and any they trigger) complete. */
+  /**
+   * Resolves when all currently in-flight tasks (and any they trigger) complete.
+   * Only safe when the total set of work is finite. Do not call while new tasks
+   * are being continuously enqueued.
+   */
   async flush(): Promise<void> {
     const snapshot = [...this.inFlight.values()];
     if (snapshot.length === 0) return;
@@ -75,6 +81,7 @@ export class CoalescingQueue {
     await this.flush();
   }
 
+  /** Number of keys currently in-flight (including those waiting on the semaphore). */
   get activeCount(): number {
     return this.inFlight.size;
   }
