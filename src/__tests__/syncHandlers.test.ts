@@ -252,6 +252,65 @@ describe("handleLocalUpsert", () => {
     await handleLocalUpsert(`${ROOT}/file.txt`, true);
     expect(mockFetch).not.toHaveBeenCalled();
   });
+
+  it("shows upload notification when silent=false (default)", async () => {
+    const notifications: string[] = [];
+    setupIpcMocks({
+      get_file_state_by_local_path: () => null,
+      stat_local_file: () => ({ mtimeMs: 1000, sizeBytes: 100, isDir: false }),
+      read_local_file: () => new Uint8Array(100),
+      upsert_file_state: () => null,
+      show_notification: (_p: Record<string, unknown>) => {
+        notifications.push(_p["body"] as string);
+        return null;
+      },
+    });
+    _setWatchedFoldersForTesting(
+      new Map([[FOLDER_UID, { localDir: ROOT, selectedRoot: { uid: FOLDER_UID, name: "My Files", drivePath: "", mode: "files" as const } }]]),
+    );
+    const absPath = `${ROOT}/file.txt`;
+    vi.mocked(getFileUploader).mockResolvedValue({
+      uploadFromFile: vi.fn().mockResolvedValue({
+        completion: vi.fn().mockResolvedValue({ nodeUid: "n1", nodeRevisionUid: "r1" }),
+      }),
+    } as never);
+
+    await handleLocalUpsert(absPath, false); // default silent=false
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toContain("file.txt");
+  });
+
+  it("suppresses upload notification when silent=true", async () => {
+    const notifications: string[] = [];
+    setupIpcMocks({
+      get_file_state_by_local_path: () => null,
+      stat_local_file: () => ({ mtimeMs: 1000, sizeBytes: 100, isDir: false }),
+      read_local_file: () => new Uint8Array(100),
+      upsert_file_state: () => null,
+      show_notification: (_p: Record<string, unknown>) => {
+        notifications.push(_p["body"] as string);
+        return null;
+      },
+    });
+    _setWatchedFoldersForTesting(
+      new Map([[FOLDER_UID, { localDir: ROOT, selectedRoot: { uid: FOLDER_UID, name: "My Files", drivePath: "", mode: "files" as const } }]]),
+    );
+    const absPath = `${ROOT}/file.txt`;
+    vi.mocked(getFileUploader).mockResolvedValue({
+      uploadFromFile: vi.fn().mockResolvedValue({
+        completion: vi.fn().mockResolvedValue({ nodeUid: "n1", nodeRevisionUid: "r1" }),
+      }),
+    } as never);
+
+    await handleLocalUpsert(absPath, false, true); // silent=true
+    expect(notifications).toHaveLength(0);
+  });
+
+  it("returns early without uploading when _paused", async () => {
+    pauseSync();
+    await handleLocalUpsert(`${ROOT}/file.txt`, false);
+    expect(getFileUploader).not.toHaveBeenCalled();
+  });
 });
 
 // ── handleRemoteDelete ────────────────────────────────────────────────────────

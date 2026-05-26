@@ -170,7 +170,13 @@ async function handleLocalDirCreate(absPath: string): Promise<void> {
 export async function handleLocalUpsert(
   absPath: string,
   checkStability: boolean,
+  silent = false,
 ): Promise<void> {
+  if (_paused) {
+    console.log("[sync] paused — skipping upload:", absPath);
+    return;
+  }
+
   const match = findWatchedFolderByLocalPath(absPath);
   if (!match) {
     console.log("[sync] file not in any watched folder, skipping:", absPath);
@@ -286,10 +292,12 @@ export async function handleLocalUpsert(
 
     addRecentlySynced(absPath, "up");
 
-    showNotification(
-      "Proton Drive Sync",
-      `${existing ? "Updated" : "Uploaded"}: ${filename}`,
-    ).catch(() => {});
+    if (!silent) {
+      showNotification(
+        "Proton Drive Sync",
+        `${existing ? "Updated" : "Uploaded"}: ${filename}`,
+      ).catch(() => {});
+    }
   } catch (err) {
     console.error("[sync] upload failed for", absPath, err);
     recordError(absPath, String(err));
