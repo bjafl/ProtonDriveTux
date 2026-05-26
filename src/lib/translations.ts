@@ -82,6 +82,10 @@ export type Translations = {
   conflictBulkLargest: string;
   conflictBulkAllLocal: string;
   conflictConfirm: string;
+  // Form validation
+  validationInvalidEmail: string;
+  validationRequired: string;
+  validationTotpCode: string;
   // Settings
   changeSyncSettings: string;
   notConfigured: string;
@@ -165,6 +169,9 @@ export const T: Record<Lang, Translations> = {
     conflictBulkLargest: "Behold størst",
     conflictBulkAllLocal: "Behold alle lokale",
     conflictConfirm: "Bekreft og fortsett",
+    validationInvalidEmail: "Ugyldig e-postadresse",
+    validationRequired: "Kan ikke være tomt",
+    validationTotpCode: "Skriv inn en gyldig kode (maks 6 siffer)",
     changeSyncSettings: "Endre synkinnstillinger",
     notConfigured: "Ikke konfigurert",
     pauseSync: "Sett på pause",
@@ -244,6 +251,9 @@ export const T: Record<Lang, Translations> = {
     conflictBulkLargest: "Keep largest",
     conflictBulkAllLocal: "Keep all local",
     conflictConfirm: "Confirm & continue",
+    validationInvalidEmail: "Invalid email address",
+    validationRequired: "Can't be blank",
+    validationTotpCode: "Enter a valid code (max 6 digits)",
     changeSyncSettings: "Change sync settings",
     notConfigured: "Not configured",
     pauseSync: "Pause sync",
