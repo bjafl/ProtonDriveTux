@@ -44,12 +44,34 @@ class Semaphore {
 }
 ```
 
+**`CoalescingQueue`** — used for live events only (not batch). Ensures at most one
+in-flight + one pending operation per key (node UID for downloads, local path for uploads).
+If a second event arrives for a key already in-flight, it is marked pending; when the
+in-flight completes it runs once more with a fresh `fn` call (picking up the latest state).
+Any number of intermediate events collapse into that single re-run. Internally uses a
+`Semaphore` for the actual concurrency cap.
+
+```ts
+class CoalescingQueue {
+  constructor(semaphore: Semaphore)
+  /** Fire-and-forget. Deduplicates by key; at most one in-flight + one pending per key. */
+  enqueue(key: string, fn: () => Promise<void>): void
+  /** Number of keys currently in-flight. */
+  get activeCount(): number
+  /** Reset to initial state (for tests). */
+  reset(): void
+}
+```
+
 ### `src/lib/sync/concurrency.ts` — module exports
 
 ```
-Semaphore         (class)
-downloadSemaphore (instance, cap 6)
-uploadSemaphore   (instance, cap 4)
+Semaphore           (class)
+CoalescingQueue     (class)
+downloadSemaphore   (Semaphore instance, cap 6)
+uploadSemaphore     (Semaphore instance, cap 4)
+downloadQueue       (CoalescingQueue wrapping downloadSemaphore)
+uploadQueue         (CoalescingQueue wrapping uploadSemaphore)
 DOWNLOAD_CONCURRENCY
 UPLOAD_CONCURRENCY
 ```
@@ -90,16 +112,25 @@ Promise.all([
 ### Live events (ongoing)
 
 The two event listeners (`subscribeToTreeEvents` and `listen("sync://local-change")`) are already
-on separate callbacks and already interleave freely. The change: callbacks fire-and-forget instead
-of awaiting:
+on separate callbacks and already interleave freely. The change: callbacks enqueue work into the
+`CoalescingQueue` instead of awaiting directly:
 
 ```ts
 subscribeToTreeEvents(scopeId, (event) => {
-  handleDriveEvent(event, initialSyncFolder).catch(console.error);
+  if (event type is NodeCreated/NodeUpdated)
+    downloadQueue.enqueue(event.nodeUid, () => handleRemoteNodeUpdate(event.nodeUid));
+});
+
+listen("sync://local-change", (e) => {
+  uploadQueue.enqueue(e.payload.absPath, () => handleLocalChange(e.payload));
 });
 ```
 
-The semaphore inside `handleRemoteNodeUpdate` / `handleLocalUpsert` controls actual concurrency.
+The `CoalescingQueue` guarantees: if the same node UID or path fires twice before the first
+completes, the second becomes a single re-run after the first finishes — no concurrent writes
+to the same file, no missed updates. The internal `Semaphore` caps total concurrency across all
+live events of each direction.
+
 Live events keep individual desktop notifications (they arrive spaced out; user expects immediate feedback).
 
 ### Tray status
@@ -146,11 +177,19 @@ requirement.
 
 ### `concurrency.test.ts` (new)
 
-- `Semaphore` respects cap: dispatch cap+2 tasks, verify no more than cap run simultaneously
-  (use a counter that increments on entry, asserts ≤ cap, decrements on exit).
+**Semaphore:**
+- Respects cap: dispatch cap+2 tasks, verify no more than cap run simultaneously
+  (counter increments on entry, asserts ≤ cap, decrements on exit).
 - Queue ordering: tasks queued beyond cap execute in FIFO order.
 - Release on throw: a task that throws still releases its slot; subsequent tasks proceed.
 - `queued` getter: returns correct count before and after tasks complete.
+
+**CoalescingQueue:**
+- Deduplication: enqueue the same key twice while first is in-flight → only two total
+  executions (the in-flight one + one re-run), not three.
+- No duplicate concurrent writes: verify the same key is never running more than once at a time.
+- Independent keys run in parallel up to the semaphore cap.
+- A key that throws in its fn still allows re-run on next enqueue.
 
 ### Updated reconciliation / handler tests
 
@@ -170,11 +209,11 @@ boundary, so the semaphore is never entered.
 
 | File | Action |
 |------|--------|
-| `src/lib/sync/concurrency.ts` | Create — `Semaphore`, instances, constants |
+| `src/lib/sync/concurrency.ts` | Create — `Semaphore`, `CoalescingQueue`, instances, constants |
 | `src/lib/sync/reconciliation.ts` | Modify — two-pass fan-out, `Promise.all`, batch notification |
 | `src/lib/sync/remote-to-local.ts` | Modify — acquire `downloadSemaphore` in `handleRemoteNodeUpdate` |
 | `src/lib/sync/local-to-remote.ts` | Modify — acquire `uploadSemaphore` in `handleLocalUpsert` |
-| `src/lib/sync/index.ts` | Modify — `Promise.all` for initial sync phases, fire-and-forget live events |
+| `src/lib/sync/index.ts` | Modify — `Promise.all` for initial sync phases, `CoalescingQueue` for live events |
 | `src/types/sync.ts` | Modify — add `queuedDown`, `queuedUp` to `TrayStatusPayload` |
 | `src/lib/sync/state.ts` | Modify — pass queue counts in `scheduleTrayUpdate` |
 | `src/__tests__/concurrency.test.ts` | Create — Semaphore unit tests |
