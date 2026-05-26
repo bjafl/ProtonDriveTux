@@ -1,8 +1,5 @@
-export interface FileStat {
-  mtimeMs: number;
-  sizeBytes: number;
-  isDir: boolean;
-}
+import type { FileStat } from "../types/sync";
+export type { FileStat };
 
 export function guessMimeType(filename: string): string {
   const ext = filename.slice(filename.lastIndexOf(".") + 1).toLowerCase();

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { getLocalRoot, getDbSyncConfig, startFileWatcher, logout as ipcLogout } from "../lib/ipcApi";
 import { listen } from "@tauri-apps/api/event";
 import {
   startSync, setSyncStatusCallback, triggerFullSync, pauseSync, resumeSync, isSyncPaused,
@@ -48,8 +48,8 @@ export function useSyncStatus(
 
     async function init() {
       const [localRoot, selectedFoldersJson] = await Promise.all([
-        invoke<string | null>("get_local_root"),
-        invoke<string | null>("get_db_sync_config", { key: "selected_folders" }),
+        getLocalRoot(),
+        getDbSyncConfig("selected_folders"),
       ]);
       if (cancelled) return;
 
@@ -74,7 +74,7 @@ export function useSyncStatus(
         }
       });
 
-      await invoke("start_file_watcher", { path: localRoot }).catch(console.error);
+      await startFileWatcher(localRoot).catch(console.error);
       const stop = await startSync();
       if (cancelled) { stop(); return; }
       stopSyncRef.current = stop;
@@ -116,7 +116,7 @@ export function useSyncStatus(
   }, [onSessionExpired, onFileStatesChanged]);
 
   const handleLogout = async () => {
-    await invoke("logout").catch(console.error);
+    await ipcLogout().catch(console.error);
     releaseDriveClient();
     window.location.reload();
   };

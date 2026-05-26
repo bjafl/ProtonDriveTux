@@ -32,11 +32,7 @@ export function useHumanVerification(theme: Theme) {
       setState("idle");
 
       try {
-        await ipcOpenCaptchaWindow({
-          token: hvToken,
-          methods,
-          theme,
-        });
+        await ipcOpenCaptchaWindow(hvToken, methods, theme);
         setState("pending");
       } catch (err) {
         unregisterListener();

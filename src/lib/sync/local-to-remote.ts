@@ -1,4 +1,11 @@
-import { invoke } from "@tauri-apps/api/core";
+import {
+  getFileStateByLocalPath,
+  getAllFileStates,
+  deleteFileState,
+  readLocalFile,
+  upsertFileState,
+  showNotification,
+} from "../ipcApi";
 import {
   getFileUploader,
   getFileRevisionUploader,
@@ -18,7 +25,7 @@ import {
   statFile,
   _paused,
 } from "./state";
-import type { WatchEvent, FileState } from "./state";
+import type { WatchEvent } from "./state";
 import { waitForFileStable } from "./config";
 
 export type { WatchEvent };
@@ -75,12 +82,7 @@ async function handleLocalDelete(absPath: string): Promise<void> {
     return;
   }
 
-  const existing = await invoke<FileState | null>(
-    "get_file_state_by_local_path",
-    {
-      localPath: absPath,
-    },
-  );
+  const existing = await getFileStateByLocalPath(absPath);
   if (!existing) {
     console.log("[sync] local delete: no DB entry for", absPath, "— skipping");
     return;
@@ -89,7 +91,7 @@ async function handleLocalDelete(absPath: string): Promise<void> {
   markActive(label);
   try {
     await trashNode(existing.remoteId);
-    await invoke("delete_file_state", { remoteId: existing.remoteId });
+    await deleteFileState(existing.remoteId);
     console.log("[sync] trashed remote node for deleted local file:", absPath);
   } catch (err) {
     console.error("[sync] Failed to trash remote node for", absPath, err);
@@ -116,12 +118,10 @@ async function handleLocalDirDeleteToRemote(
       }
     }
     // Clean up any remaining DB rows under this tree (files may already be gone).
-    const allFiles = await invoke<FileState[]>("get_all_file_states");
+    const allFiles = await getAllFileStates();
     for (const f of allFiles) {
       if (f.localPath === localDir || f.localPath.startsWith(localDir + "/")) {
-        await invoke("delete_file_state", { remoteId: f.remoteId }).catch(
-          console.error,
-        );
+        await deleteFileState(f.remoteId).catch(console.error);
       }
     }
     console.log(
@@ -189,12 +189,7 @@ export async function handleLocalUpsert(
       return;
     }
 
-    const existing = await invoke<FileState | null>(
-      "get_file_state_by_local_path",
-      {
-        localPath: absPath,
-      },
-    );
+    const existing = await getFileStateByLocalPath(absPath);
 
     if (isAlreadySynced(stat, existing)) {
       console.log(
@@ -215,10 +210,7 @@ export async function handleLocalUpsert(
     //   console.log("[sync] skipping (unreadable via pd-file://):", absPath, err);
     //   return;
     // }
-    const fileRawData = await invoke<Uint8Array<ArrayBuffer>>(
-      "read_local_file",
-      { absPath },
-    );
+    const fileRawData = await readLocalFile(absPath);
     // const blob = new Blob([fileRawData], {type: "application/octet-stream"});
     const filename = absPath.split("/").pop() ?? absPath;
     const file = new File([fileRawData], filename, {
@@ -283,7 +275,7 @@ export async function handleLocalUpsert(
       );
     }
 
-    await invoke("upsert_file_state", {
+    await upsertFileState({
       remoteId: nodeUid,
       localPath: absPath,
       etag: nodeRevisionUid,
@@ -294,10 +286,10 @@ export async function handleLocalUpsert(
 
     addRecentlySynced(absPath, "up");
 
-    invoke("show_notification", {
-      title: "Proton Drive Sync",
-      body: `${existing ? "Updated" : "Uploaded"}: ${filename}`,
-    }).catch(() => {});
+    showNotification(
+      "Proton Drive Sync",
+      `${existing ? "Updated" : "Uploaded"}: ${filename}`,
+    ).catch(() => {});
   } catch (err) {
     console.error("[sync] upload failed for", absPath, err);
     recordError(absPath, String(err));

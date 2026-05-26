@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { getLocalRoot, getDbSyncConfig, setDbSyncConfig } from "../ipcApi";
 import { getSyncRoot, listFolderChildren } from "../drive";
 import { NodeType } from "@protontech/drive-sdk";
 import type { SelectedFolderRecord } from "../syncHelpers";
@@ -13,8 +13,8 @@ export async function loadSyncConfig(): Promise<{
   treeEventScopeId: string;
 }> {
   const [localRoot, selectedFoldersJson] = await Promise.all([
-    invoke<string | null>("get_local_root"),
-    invoke<string | null>("get_db_sync_config", { key: "selected_folders" }),
+    getLocalRoot(),
+    getDbSyncConfig("selected_folders"),
   ]);
 
   if (!localRoot) throw new Error("No local root configured — run onboarding first");
@@ -27,7 +27,7 @@ export async function loadSyncConfig(): Promise<{
   if (!rootResult.ok) throw new Error("Could not get Drive root: " + String(rootResult.error));
 
   const treeEventScopeId = rootResult.value.treeEventScopeId;
-  invoke("set_db_sync_config", { key: "tree_event_scope_id", value: treeEventScopeId })
+  setDbSyncConfig("tree_event_scope_id", treeEventScopeId)
     .catch((e: unknown) => console.warn("[sync] Failed to persist tree event scope ID:", e));
 
   return { localRoot, selectedFolders, treeEventScopeId };

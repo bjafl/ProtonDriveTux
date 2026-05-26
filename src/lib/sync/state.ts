@@ -1,9 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
+import { updateTrayStatus, showNotification, statLocalFile } from "../ipcApi";
 import type { WatchedFolderEntry, SelectedFolderRecord } from "../syncHelpers";
-import type { FileStat } from "../syncDecisions";
+import type { FileStat } from "../../types/sync";
 
 // Re-export for consumers of sync/index.ts
 export type { WatchedFolderEntry, SelectedFolderRecord };
+export type { FileState, LocalFileEntry } from "../../types/sync";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -16,24 +17,6 @@ export interface SyncStatus {
   active: string[];
   errors: Array<{ path: string; error: string }>;
 }
-
-export interface FileState {
-  remoteId: string;
-  localPath: string;
-  etag: string | null;
-  modifiedAt: number | null;
-  sizeBytes: number | null;
-  syncState: string;
-}
-
-interface LocalFileEntry {
-  relPath: string;
-  absPath: string;
-  mtimeMs: number;
-  sizeBytes: number;
-}
-
-export type { LocalFileEntry };
 
 // ── Anti-loop state ──────────────────────────────────────────────────────────
 
@@ -97,7 +80,7 @@ export function scheduleTrayUpdate(): void {
   _trayUpdateTimer = setTimeout(() => {
     _trayUpdateTimer = null;
     const activeItems = _status.active.filter((x) => x !== FULL_SYNC_LABEL);
-    invoke("update_tray_status", {
+    updateTrayStatus({
       paused: _paused,
       syncing: activeItems.length > 0,
       activeCount: activeItems.length,
@@ -132,10 +115,10 @@ export function recordError(path: string, error: string): void {
   const now = Date.now();
   if (now - _lastErrorNotificationMs >= ERROR_NOTIFY_THROTTLE_MS) {
     _lastErrorNotificationMs = now;
-    invoke("show_notification", {
-      title: "Proton Drive Sync — error",
-      body: `${path.split("/").pop() ?? path}: ${error}`,
-    }).catch(() => {});
+    showNotification(
+      "Proton Drive Sync — error",
+      `${path.split("/").pop() ?? path}: ${error}`,
+    ).catch(() => {});
   }
 }
 
@@ -143,7 +126,7 @@ export function recordError(path: string, error: string): void {
 
 export async function statFile(absPath: string): Promise<FileStat | null> {
   try {
-    return await invoke<FileStat>("stat_local_file", { absPath });
+    return await statLocalFile(absPath);
   } catch {
     return null;
   }

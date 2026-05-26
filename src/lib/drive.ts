@@ -16,8 +16,15 @@ import {
   type NodeOrUid,
   type UploadMetadata,
 } from "@protontech/drive-sdk";
-import { invoke } from "@tauri-apps/api/core";
-
+import {
+  getDbSyncConfig,
+  setDbSyncConfig,
+  storeTokens,
+  truncateLocalFile,
+  writeLocalFileChunk,
+  deleteLocalFile,
+  renameLocalFile,
+} from "./ipcApi";
 import { fetch } from "./tauriFetch";
 import { createAccountProvider } from "./accountProvider";
 import { createHttpClient } from "./httpClient";
@@ -46,18 +53,13 @@ export function setSessionExpiredCallback(cb: (() => void) | null): void {
 // Reads/writes event anchors from the Tauri DB so subscriptions resume after restart.
 const latestEventIdProvider: LatestEventIdProvider = {
   async getLatestEventId(treeEventScopeId: string): Promise<string | null> {
-    return invoke<string | null>("get_db_sync_config", {
-      key: `event_anchor_${treeEventScopeId}`,
-    });
+    return getDbSyncConfig(`event_anchor_${treeEventScopeId}`);
   },
 };
 
 export async function persistEventAnchor(treeEventScopeId: string, eventId: string): Promise<void> {
   if (!eventId || eventId === "none") return;
-  await invoke("set_db_sync_config", {
-    key: `event_anchor_${treeEventScopeId}`,
-    value: eventId,
-  });
+  await setDbSyncConfig(`event_anchor_${treeEventScopeId}`, eventId);
 }
 
 /**
@@ -96,12 +98,7 @@ async function refreshSession(): Promise<void> {
   currentSession.accessToken = data.AccessToken;
   currentSession.refreshToken = data.RefreshToken;
 
-  await invoke("store_tokens", {
-    uid,
-    accessToken: data.AccessToken,
-    refreshToken: data.RefreshToken,
-    userId,
-  });
+  await storeTokens(uid, data.AccessToken, data.RefreshToken, userId);
 }
 
 /**
@@ -128,12 +125,7 @@ export async function refreshTokens(
   if (!resp.ok) throw new AuthExpiredError(resp.status);
   const data = (await resp.json()) as { AccessToken: string; RefreshToken: string };
 
-  await invoke("store_tokens", {
-    uid,
-    accessToken: data.AccessToken,
-    refreshToken: data.RefreshToken,
-    userId,
-  });
+  await storeTokens(uid, data.AccessToken, data.RefreshToken, userId);
 
   return { accessToken: data.AccessToken, refreshToken: data.RefreshToken };
 }
@@ -170,6 +162,10 @@ export async function initDriveClient(session: DriveSession): Promise<void> {
 export function getDriveClient(): ProtonDriveClient {
   if (!driveClient) throw new Error("Drive client not initialized — call initDriveClient first");
   return driveClient;
+}
+
+export function isDriveClientInitialized(): boolean {
+  return driveClient !== null;
 }
 
 export function releaseDriveClient(): void {
@@ -251,23 +247,23 @@ export async function streamDownloadToPath(
   onBeforeRename?: () => void,
 ): Promise<void> {
   const tmpPath = `${absPath}.pd-tmp`;
-  await invoke("truncate_local_file", { absPath: tmpPath });
+  await truncateLocalFile(tmpPath);
   const downloader = await getFileDownloader(nodeUid);
   try {
     const writable = new WritableStream<Uint8Array>({
       async write(chunk) {
         let binary = "";
         for (let i = 0; i < chunk.length; i++) binary += String.fromCharCode(chunk[i]);
-        await invoke("write_local_file_chunk", { absPath: tmpPath, contentB64: btoa(binary) });
+        await writeLocalFileChunk(tmpPath, btoa(binary));
       },
     });
     await downloader.downloadToStream(writable, () => {}).completion();
   } catch (err) {
-    await invoke("delete_local_file", { absPath: tmpPath }).catch(() => {});
+    await deleteLocalFile(tmpPath).catch(() => {});
     throw err;
   }
   onBeforeRename?.();
-  await invoke("rename_local_file", { fromPath: tmpPath, toPath: absPath });
+  await renameLocalFile(tmpPath, absPath);
 }
 
 export async function createFolder(

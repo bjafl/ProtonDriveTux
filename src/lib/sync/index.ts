@@ -13,7 +13,7 @@
  */
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
+import { ensureLocalDir } from "../ipcApi";
 import { subscribeToTreeEvents } from "../drive";
 import type { DriveEvent } from "@protontech/drive-sdk";
 import { findWatchedFolderByPath } from "../syncHelpers";
@@ -70,7 +70,7 @@ export async function startSync(): Promise<() => void> {
 
   // Ensure all Drive-mapped directories exist locally (covers dirs created while offline)
   for (const [, entry] of watchedFolderUids) {
-    await invoke("ensure_local_dir", { absPath: entry.localDir }).catch(console.error);
+    await ensureLocalDir(entry.localDir).catch(console.error);
   }
 
   await initialSyncFolder();

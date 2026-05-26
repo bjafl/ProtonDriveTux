@@ -1,4 +1,14 @@
-import { invoke } from "@tauri-apps/api/core";
+import {
+  ensureLocalDir,
+  getFileStateByRemoteId,
+  renameLocalFile,
+  upsertFileState,
+  deleteLocalFile,
+  deleteFileState,
+  getAllFileStates,
+  deleteLocalDir,
+  showNotification,
+} from "../ipcApi";
 import { getNode, streamDownloadToPath, persistEventAnchor } from "../drive";
 import { NodeType, DriveEventType } from "@protontech/drive-sdk";
 import type { DriveEvent } from "@protontech/drive-sdk";
@@ -12,8 +22,6 @@ import {
   addRecentlySynced,
   _paused,
 } from "./state";
-import type { FileState } from "./state";
-
 // ── Remote → Local ───────────────────────────────────────────────────────────
 
 export async function handleDriveEvent(
@@ -90,7 +98,7 @@ export async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
 
     if (node.type === NodeType.Folder) {
       const localDir = `${watchedEntry.localDir}/${node.name}`;
-      await invoke("ensure_local_dir", { absPath: localDir }).catch(console.error);
+      await ensureLocalDir(localDir).catch(console.error);
       if (!watchedFolderUids.has(nodeUid)) {
         watchedFolderUids.set(nodeUid, { localDir, selectedRoot: watchedEntry.selectedRoot });
       }
@@ -103,9 +111,7 @@ export async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
       return;
     }
 
-    const existing = await invoke<FileState | null>("get_file_state_by_remote_id", {
-      remoteId: nodeUid,
-    });
+    const existing = await getFileStateByRemoteId(nodeUid);
 
     const activeRevisionUid = node.activeRevision?.uid ?? null;
     const expectedPath = `${watchedEntry.localDir}/${node.name}`;
@@ -122,8 +128,8 @@ export async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
       if (isRename && isContentSame) {
         suppressPath(existing.localPath);
         suppressPath(expectedPath);
-        await invoke("rename_local_file", { fromPath: existing.localPath, toPath: expectedPath });
-        await invoke("upsert_file_state", {
+        await renameLocalFile(existing.localPath, expectedPath);
+        await upsertFileState({
           remoteId: nodeUid,
           localPath: expectedPath,
           etag: existing.etag,
@@ -137,7 +143,7 @@ export async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
 
       if (isRename) {
         suppressPath(existing.localPath);
-        await invoke("delete_local_file", { absPath: existing.localPath });
+        await deleteLocalFile(existing.localPath);
       }
     }
 
@@ -145,7 +151,7 @@ export async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
     addRecentlySynced(expectedPath, "down");
 
     const revision = node.activeRevision;
-    await invoke("upsert_file_state", {
+    await upsertFileState({
       remoteId: nodeUid,
       localPath: expectedPath,
       etag: revision?.uid ?? null,
@@ -154,10 +160,7 @@ export async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
       syncState: "synced",
     });
 
-    invoke("show_notification", {
-      title: "Proton Drive Sync",
-      body: `Downloaded: ${node.name}`,
-    }).catch(() => {});
+    showNotification("Proton Drive Sync", `Downloaded: ${node.name}`).catch(() => {});
     console.log("[sync] downloaded remote node:", nodeUid, "→", expectedPath);
   } catch (err) {
     console.error("[sync] download failed for node", nodeUid, err);
@@ -171,13 +174,11 @@ export async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
 export async function handleRemoteDelete(nodeUid: string): Promise<void> {
   try {
     // 1. Known file in DB
-    const fileState = await invoke<FileState | null>("get_file_state_by_remote_id", {
-      remoteId: nodeUid,
-    });
+    const fileState = await getFileStateByRemoteId(nodeUid);
     if (fileState) {
       suppressPath(fileState.localPath);
-      await invoke("delete_local_file", { absPath: fileState.localPath });
-      await invoke("delete_file_state", { remoteId: nodeUid });
+      await deleteLocalFile(fileState.localPath);
+      await deleteFileState(nodeUid);
       console.log("[sync] deleted local file:", fileState.localPath, "(remote:", nodeUid, ")");
       return;
     }
@@ -210,10 +211,10 @@ export async function handleRemoteDelete(nodeUid: string): Promise<void> {
 
 async function handleRemoteDirDelete(folderUid: string, localDir: string): Promise<void> {
   // Clean up all DB rows under this directory tree
-  const allFiles = await invoke<FileState[]>("get_all_file_states");
+  const allFiles = await getAllFileStates();
   for (const f of allFiles) {
     if (f.localPath === localDir || f.localPath.startsWith(localDir + "/")) {
-      await invoke("delete_file_state", { remoteId: f.remoteId }).catch(console.error);
+      await deleteFileState(f.remoteId).catch(console.error);
     }
   }
   // Remove this folder and all its watched subdirs from the in-memory map
@@ -224,6 +225,6 @@ async function handleRemoteDirDelete(folderUid: string, localDir: string): Promi
   }
   watchedFolderUids.delete(folderUid);
   suppressPath(localDir);
-  await invoke("delete_local_dir", { absPath: localDir });
+  await deleteLocalDir(localDir);
   console.log("[sync] deleted local directory:", localDir, "(remote:", folderUid, ")");
 }

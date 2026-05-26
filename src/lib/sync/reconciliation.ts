@@ -1,4 +1,11 @@
-import { invoke } from "@tauri-apps/api/core";
+import {
+  getFileStateByRemoteId,
+  ensureLocalDir,
+  listDirRecursive,
+  listLocalDir,
+  getAllFileStates,
+  deleteFileState,
+} from "../ipcApi";
 import { listFolderChildren } from "../drive";
 import { NodeType } from "@protontech/drive-sdk";
 import {
@@ -15,13 +22,6 @@ import type { FileState } from "./state";
 import { handleRemoteNodeUpdate } from "./remote-to-local";
 import { handleLocalUpsert } from "./local-to-remote";
 
-interface LocalFileEntry {
-  absPath: string;
-  relPath: string;
-  mtimeMs: number;
-  sizeBytes: number;
-}
-
 // ── Initial sync ─────────────────────────────────────────────────────────────
 
 export async function initialSyncFolder(): Promise<void> {
@@ -34,9 +34,7 @@ export async function initialSyncFolder(): Promise<void> {
           continue;
         }
         const node = result.value;
-        const existing = await invoke<FileState | null>("get_file_state_by_remote_id", {
-          remoteId: node.uid,
-        });
+        const existing = await getFileStateByRemoteId(node.uid);
         if (existing) {
           const remoteRevUid = node.activeRevision?.uid;
           if (remoteRevUid && remoteRevUid === existing.etag) continue;
@@ -52,15 +50,15 @@ export async function initialSyncFolder(): Promise<void> {
 export async function initialSyncLocalFolder(): Promise<void> {
   for (const [, entry] of watchedFolderUids) {
     console.log("[sync] Scanning local folder:", entry.localDir);
-    await invoke("ensure_local_dir", { absPath: entry.localDir }).catch(console.error);
+    await ensureLocalDir(entry.localDir).catch(console.error);
     try {
       if (entry.selectedRoot.mode === "recursive") {
-        const files = await invoke<LocalFileEntry[]>("list_dir_recursive", { absPath: entry.localDir });
+        const files = await listDirRecursive(entry.localDir);
         for (const f of files) {
           await handleLocalUpsert(f.absPath, false);
         }
       } else {
-        const files = await invoke<string[]>("list_local_dir", { absPath: entry.localDir });
+        const files = await listLocalDir(entry.localDir);
         for (const absPath of files) {
           await handleLocalUpsert(absPath, false);
         }
@@ -75,12 +73,12 @@ export async function initialSyncLocalFolder(): Promise<void> {
 
 /** @internal */
 export async function cleanStaleDbEntries(): Promise<void> {
-  const allFiles = await invoke<FileState[]>("get_all_file_states");
+  const allFiles = await getAllFileStates();
   for (const f of allFiles) {
     const stat = await statFile(f.localPath);
     if (!stat) {
       console.log("[sync] removing stale DB entry:", f.localPath);
-      await invoke("delete_file_state", { remoteId: f.remoteId }).catch(console.error);
+      await deleteFileState(f.remoteId).catch(console.error);
     }
   }
 }
@@ -108,3 +106,6 @@ export async function triggerFullSync(): Promise<void> {
     markInactive(FULL_SYNC_LABEL);
   }
 }
+
+// Keep FileState in scope for any local use (imported via state re-export)
+export type { FileState };

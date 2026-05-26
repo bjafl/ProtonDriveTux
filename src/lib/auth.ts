@@ -3,7 +3,7 @@
  * Rust is only used for storing tokens in GNOME Keyring.
  */
 import { getSrp } from "@protontech/crypto/srp";
-import { invoke } from "@tauri-apps/api/core";
+import { storeTokens } from "./ipcApi";
 import { initCrypto } from "./cryptoModule";
 import { fetch } from "./tauriFetch";
 import { BASE_URL, APP_VERSION } from "./config";
@@ -187,6 +187,6 @@ async function persistTokens(
   refreshToken: string,
   userId: string,
 ): Promise<void> {
-  await invoke("store_tokens", { uid, accessToken, refreshToken, userId });
+  await storeTokens(uid, accessToken, refreshToken, userId);
 }
 

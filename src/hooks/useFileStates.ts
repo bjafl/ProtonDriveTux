@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { getAllFileStates } from "../lib/ipcApi";
 import type { FileState } from "../lib/sync";
 
 interface FileStatesHookResult {
@@ -12,7 +12,7 @@ export function useFileStates(): FileStatesHookResult {
 
   const refreshFileStates = useCallback(async () => {
     try {
-      const files = await invoke<FileState[]>("get_all_file_states");
+      const files = await getAllFileStates();
       setFileStates(files);
     } catch { /* ignore */ }
   }, []);
