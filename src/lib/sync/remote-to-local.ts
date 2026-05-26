@@ -79,7 +79,11 @@ export async function handleDriveEvent(
 }
 
 /** @internal */
-export async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
+export async function handleRemoteNodeUpdate(nodeUid: string, silent = false): Promise<void> {
+  if (_paused) {
+    console.log("[sync] paused — skipping download:", nodeUid);
+    return;
+  }
   const label = nodeUid;
   markActive(label);
   try {
@@ -160,7 +164,9 @@ export async function handleRemoteNodeUpdate(nodeUid: string): Promise<void> {
       syncState: "synced",
     });
 
-    showNotification("Proton Drive Sync", `Downloaded: ${node.name}`).catch(() => {});
+    if (!silent) {
+      showNotification("Proton Drive Sync", `Downloaded: ${node.name}`).catch(() => {});
+    }
     console.log("[sync] downloaded remote node:", nodeUid, "→", expectedPath);
   } catch (err) {
     console.error("[sync] download failed for node", nodeUid, err);
