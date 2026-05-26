@@ -6,6 +6,7 @@ export class Semaphore {
   private readonly queue: Array<() => void> = [];
 
   constructor(private readonly cap: number) {
+    if (cap < 1) throw new RangeError(`Semaphore cap must be >= 1, got ${cap}`);
     this.slots = cap;
   }
 
@@ -17,7 +18,7 @@ export class Semaphore {
           fn().then(resolve, reject).finally(() => {
             this.slots++;
             const next = this.queue.shift();
-            if (next) setTimeout(() => next(), 0);
+            if (next) next();
           });
         } else {
           this.queue.push(attempt);
@@ -31,6 +32,7 @@ export class Semaphore {
     return this.queue.length;
   }
 
+  /** For test teardown only. Call only after all in-flight tasks have finished. */
   reset(): void {
     this.slots = this.cap;
     this.queue.length = 0;

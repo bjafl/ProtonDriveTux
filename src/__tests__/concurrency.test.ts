@@ -33,7 +33,7 @@ describe("Semaphore", () => {
 
     resolve1();
     await p1;
-    await new Promise((r) => setTimeout(r, 0)); // let microtasks flush
+    await Promise.resolve(); // flush microtasks
     expect(sem.queued).toBe(1);
 
     await Promise.all([p2, p3]);
