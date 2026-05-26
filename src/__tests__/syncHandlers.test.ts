@@ -542,17 +542,42 @@ describe("handleRemoteNodeUpdate", () => {
         activeRevision: { uid: "rev-1", claimedSize: 100 },
       },
     } as never);
-    vi.mocked(streamDownloadToPath).mockResolvedValue(undefined as never);
+    vi.mocked(streamDownloadToPath).mockResolvedValue(undefined);
 
     await handleRemoteNodeUpdate("node-1", true);
     expect(notifications).toHaveLength(0);
   });
 
-  it("returns early without downloading when _paused", async () => {
-    pauseSync();
+  it("shows notification when silent=false (default)", async () => {
+    const notifications: string[] = [];
+    setupIpcMocks({
+      get_file_state_by_remote_id: () => null,
+      upsert_file_state: () => null,
+      show_notification: (_p: Record<string, unknown>) => {
+        notifications.push(_p["body"] as string);
+        return null;
+      },
+    });
     _setWatchedFoldersForTesting(
       new Map([[FOLDER_UID, { localDir: ROOT, selectedRoot: { uid: FOLDER_UID, name: "My Files", drivePath: "", mode: "files" as const } }]]),
     );
+    vi.mocked(getNode).mockResolvedValue({
+      ok: true,
+      value: {
+        uid: "node-1", name: "file.txt", type: NodeType.File,
+        parentUid: FOLDER_UID, modificationTime: new Date(1000),
+        activeRevision: { uid: "rev-1", claimedSize: 100 },
+      },
+    } as never);
+    vi.mocked(streamDownloadToPath).mockResolvedValue(undefined);
+
+    await handleRemoteNodeUpdate("node-1"); // no silent param = default false
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toContain("file.txt");
+  });
+
+  it("returns early without downloading when _paused", async () => {
+    pauseSync();
     await handleRemoteNodeUpdate("node-1");
     expect(getNode).not.toHaveBeenCalled();
   });
