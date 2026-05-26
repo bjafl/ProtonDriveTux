@@ -102,12 +102,18 @@ export function useAuth() {
     message?: string;
     error?: unknown;
   }) {
+    const msg = message ?? (error ? String(error) : "");
     errorRef.current = {
       level,
       type,
-      message: message ?? (error ? String(error) : ""),
+      message: msg,
       error: error instanceof Error ? error : undefined,
     };
+    if (level === "warn") {
+      console.warn(`[auth] ${type}:`, msg, error ?? "");
+    } else {
+      console.error(`[auth] ${type}:`, msg, error ?? "");
+    }
   }
 
   async function _getKeyPassword(): Promise<void> {
@@ -136,7 +142,7 @@ export function useAuth() {
 
   const _refreshTokens = useCallback(async (): Promise<void> => {
     if (!tokensRef.current)
-      throw new NoTokensError("Tokens missing - cant't refresh");
+      throw new NoTokensError("Tokens missing - can't refresh");
     try {
       const refreshed = await apiRefreshTokens(
         tokensRef.current.uid,
@@ -157,6 +163,7 @@ export function useAuth() {
   async function _deriveKeyPassword(
     password: string,
     remember = false,
+    retried = false,
   ): Promise<boolean> {
     if (!tokensRef.current)
       throw new NoTokensError("Tokens missing - can't derive keypassword");
@@ -175,9 +182,10 @@ export function useAuth() {
       keyPasswordRef.current = newKeyPwd;
       return true;
     } catch (error: unknown) {
-      if (error instanceof AuthExpiredError) {
+      if (error instanceof AuthExpiredError && !retried) {
+        console.log("[auth] access token expired during key derivation — refreshing");
         await _refreshTokens();
-        return _deriveKeyPassword(password, remember);
+        return _deriveKeyPassword(password, remember, true);
       }
       _updateError({ type: "loginError", error });
       return false;
@@ -207,10 +215,11 @@ export function useAuth() {
     }
     loginStateRef.current = "pendingSrp";
     _updateAuthInfoState();
-    await _deriveKeyPassword(password, remember);
+    const ok = await _deriveKeyPassword(password, remember);
     loginStateRef.current = null;
     _updateAuthInfoState();
-    return true;
+    if (ok) console.log("[auth] login complete, drive client ready");
+    return ok;
   }
 
   const refresh = useCallback(
@@ -246,6 +255,7 @@ export function useAuth() {
         await _processLoginResult(result, password, remember);
       } catch (error: unknown) {
         if (error instanceof HumanVerificationError) {
+          console.log("[auth] human verification required, methods:", error.methods);
           hvDataRef.current = { hvToken: error.hvToken, hvMethods: error.methods };
           loginStateRef.current = "pendingHv";
           _updateAuthInfoState();
@@ -260,8 +270,12 @@ export function useAuth() {
   );
 
   const submitTotp = useCallback(async (totp: string): Promise<void> => {
-    if (!tokensRef.current)
-      throw new NoTokensError("Tokens missing - cant submit totp");
+    if (!tokensRef.current) {
+      _updateError({ type: "loginError", message: "No session — please log in again" });
+      loginStateRef.current = null;
+      _updateAuthInfoState();
+      return;
+    }
     const { uid, accessToken, refreshToken, userId } = tokensRef.current;
     try {
       await apiSubmitTotp(uid, accessToken, refreshToken, userId, totp);
@@ -281,8 +295,12 @@ export function useAuth() {
 
   const submitMailboxPassword = useCallback(
     async (password: string): Promise<void> => {
-      if (!tokensRef.current)
-        throw new NoTokensError("Tokens missing - can't submit mailbox pwd");
+      if (!tokensRef.current) {
+        _updateError({ type: "loginError", message: "No session — please log in again" });
+        loginStateRef.current = null;
+        _updateAuthInfoState();
+        return;
+      }
       try {
         loginStateRef.current = "pendingSrp";
         _updateAuthInfoState();
@@ -338,6 +356,7 @@ export function useAuth() {
   );
 
   const logout = useCallback(async (): Promise<boolean> => {
+    console.log("[auth] logging out");
     try {
       await ipcLogout();
       tokensRef.current = null;
