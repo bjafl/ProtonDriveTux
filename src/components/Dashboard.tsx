@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { getAutostartEnabled, enableAutostart, disableAutostart } from "../lib/ipcApi";
 import { useLang } from "../lib/i18n";
 import { useTheme } from "../lib/theme";
 import { useSyncStatus } from "../hooks/useSyncStatus";
@@ -42,17 +42,17 @@ export function Dashboard({
   } = useSyncStatus(onSessionExpired, refreshFileStates);
 
   useEffect(() => {
-    invoke<boolean>("get_autostart_enabled").then(setAutostartEnabled).catch(console.error);
+    getAutostartEnabled().then(setAutostartEnabled).catch(console.error);
   }, []);
 
   const handleAutostartToggle = async () => {
     setAutostartLoading(true);
     try {
       if (autostartEnabled) {
-        await invoke("disable_autostart");
+        await disableAutostart();
         setAutostartEnabled(false);
       } else {
-        await invoke("enable_autostart");
+        await enableAutostart();
         setAutostartEnabled(true);
       }
     } catch (err) {

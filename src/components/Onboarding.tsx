@@ -8,21 +8,20 @@
  *   2b: Conflict resolution (only when local root is non-empty and Drive has files)
  */
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import {
+  validateLocalRoot,
+  clearAllFileStates,
+  setLocalRoot as ipcSetLocalRoot,
+  setDbSyncConfig,
+  getLocalRoot,
+} from "../lib/ipcApi";
 import { getSyncRoot } from "../lib/drive";
 import { FolderTree } from "./FolderTree";
 import { ConflictWizard } from "./ConflictWizard";
 import type { SelectedFolderRecord } from "../lib/sync";
+import type { LocalRootInfo } from "../types/sync";
 import { defaultSyncPath } from "../lib/paths";
 import { useLang } from "../lib/i18n";
-
-interface LocalRootInfo {
-  valid: boolean;
-  exists: boolean;
-  isEmpty: boolean;
-  fileCount: number;
-  error: string | null;
-}
 
 type Step = "welcome" | "localRoot" | "folderSelect" | "conflict";
 
@@ -60,7 +59,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
     if (!path.trim()) return null;
     setValidating(true);
     try {
-      return await invoke<LocalRootInfo>("validate_local_root", { path: path.trim() });
+      return await validateLocalRoot(path.trim());
     } catch {
       return null;
     } finally {
@@ -83,12 +82,9 @@ export function Onboarding({ onComplete }: OnboardingProps) {
     // this, the engine would see old paths as conflicts with the new root's files.
     setSaving(true);
     try {
-      await invoke("clear_all_file_states");
-      await invoke("set_local_root", { path: localRoot });
-      await invoke("set_db_sync_config", {
-        key: "selected_folders",
-        value: JSON.stringify(selectedFolders),
-      });
+      await clearAllFileStates();
+      await ipcSetLocalRoot(localRoot);
+      await setDbSyncConfig("selected_folders", JSON.stringify(selectedFolders));
     } catch (err) {
       console.error("[onboarding] save failed:", err);
       setSaving(false);
@@ -262,8 +258,8 @@ export function Onboarding({ onComplete }: OnboardingProps) {
 
 /** Returns true when onboarding needs to run (no local root set or path gone). */
 export async function isOnboardingNeeded(): Promise<boolean> {
-  const root = await invoke<string | null>("get_local_root");
+  const root = await getLocalRoot();
   if (!root) return true;
-  const info = await invoke<LocalRootInfo>("validate_local_root", { path: root });
+  const info = await validateLocalRoot(root);
   return !info.exists;
 }

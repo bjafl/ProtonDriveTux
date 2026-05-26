@@ -1,26 +1,14 @@
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { getTrayStatus, showMainWindow, emitPauseToggle } from "../lib/ipcApi";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-
-interface RecentFile {
-  name: string;
-  direction: "up" | "down";
-}
-
-interface TrayStatus {
-  paused: boolean;
-  syncing: boolean;
-  activeCount: number;
-  recentFiles: RecentFile[];
-  errorCount: number;
-}
+import type { TrayStatusPayload } from "../types/sync";
 
 export function TrayPopup() {
-  const [status, setStatus] = useState<TrayStatus | null>(null);
+  const [status, setStatus] = useState<TrayStatusPayload | null>(null);
 
   useEffect(() => {
-    invoke<TrayStatus | null>("get_tray_status").then((s) => {
+    getTrayStatus().then((s) => {
       if (s) setStatus(s);
     });
 
@@ -28,7 +16,7 @@ export function TrayPopup() {
     let focusUnlisten: (() => void) | null = null;
     let cancelled = false;
 
-    listen<TrayStatus>("tray://status", (e) => setStatus(e.payload)).then((f) => {
+    listen<TrayStatusPayload>("tray://status", (e) => setStatus(e.payload)).then((f) => {
       if (cancelled) f(); else statusUnlisten = f;
     });
 
@@ -48,11 +36,11 @@ export function TrayPopup() {
   }, []);
 
   function openMain() {
-    invoke("show_main_window").catch(console.error);
+    showMainWindow().catch(console.error);
   }
 
   function togglePause() {
-    invoke("emit_pause_toggle").catch(console.error);
+    emitPauseToggle().catch(console.error);
   }
 
   const paused = status?.paused ?? false;

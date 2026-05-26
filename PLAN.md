@@ -1,8 +1,6 @@
 # PLAN — Proton Drive Linux Sync Client
 
-*Updated: 2026-05-23*
-
----
+> Updated: 2026-05-23
 
 ## Status
 
@@ -25,44 +23,7 @@ desktop notifications, autostart.
 
 ## Bugs / Gaps — must fix for correct sync
 
-### G1. `initialSyncLocalFolder` only scans top-level files ✅ Fixed
-
-**Where:** `src/lib/sync.ts` → `initialSyncLocalFolder`  
-**Fix applied:** For entries with `selectedRoot.mode === "recursive"`, now calls
-`list_dir_recursive` (returns `LocalFileEntry[]` with `abs_path`) instead of flat
-`list_local_dir`. Files mode still uses flat listing.
-
----
-
-### G2. Large file memory: full base64 round-trip ✅ Fixed
-
-**Where:** `src/lib/sync.ts` → `handleLocalUpsert` / `handleRemoteNodeUpdate`  
-**Fix applied:**
-- **Upload:** Registered `pd-file://` custom URI scheme in `lib.rs`. The Rust handler
-  serves raw file bytes on demand; `handleLocalUpsert` now does
-  `fetch("pd-file:///abs/path") → blob() → File` — no base64, no IPC copy.
-- **Download:** Added `truncate_local_file` (creates/clears the file) and
-  `write_local_file_chunk` (append mode) Rust commands. `handleRemoteNodeUpdate` now
-  writes each SDK chunk to disk as it arrives via a `WritableStream` sink instead of
-  accumulating all chunks before encoding.
-
----
-
-### G3. Watcher has no stop channel ✅ Fixed
-
-**Where:** `src-tauri/src/watcher.rs`, `src-tauri/src/commands.rs`  
-**Fix applied:** `start_watcher` now returns `Arc<AtomicBool>`. `AppState` stores
-the current stop flag. `start_file_watcher` stops the old watcher before starting
-a new one. New `stop_file_watcher` command exposed.
-
----
-
-### G4. Deleting a local file does not delete it from Drive ✅ Fixed
-
-**Where:** `src/lib/sync.ts` → `handleLocalChange` / `handleLocalDelete`  
-**Fix applied:** `handleLocalDelete` looks up `remote_id` by `local_path` from DB,
-calls `trashNode(remoteId)` (SDK `trashNodes` wrapper in `drive.ts`), then removes
-the DB row via new `delete_file_state` Rust command.
+(all fixed)
 
 ---
 
@@ -70,24 +31,11 @@ the DB row via new `delete_file_state` Rust command.
 
 ### Phase 3 — remaining
 
-**3.1 Sync pause / resume** ✅ Fixed  
-`_paused` flag in `sync.ts` guards both `handleLocalChange` and `handleDriveEvent`.
-`pauseSync()` / `resumeSync()` / `isSyncPaused()` exported. Resume triggers a full
-reconciliation to catch changes made while paused. Tray menu has a dynamic Pause/Resume
-item (Rust emits `sync://pause-toggle`); MainView status card has a matching button.
+(done)
 
 ---
 
 ### Phase 4 — remaining
-
-**4.1 MainView: show selected Drive folders, not "My Files"** ✅ Fixed  
-`src/App.tsx` now reads `selected_folders` from DB on init and displays the folder
-names joined by ", " in the sync-path row.
-
-**4.2 Watcher handoff when sync root changes** ✅ Fixed  
-`Onboarding.tsx` `handleFolderSelectNext` now calls `clear_all_file_states` before
-saving the new root, ensuring the `files` DB table is clean so the new sync session
-starts without false conflicts. `Db::clear_all()` added to `db.rs`.
 
 **4.5 Captcha dialog UI review**  
 The captcha window works but had minor layout/UX issues at the time it was implemented.
@@ -99,10 +47,6 @@ Run `cargo tauri build` end-to-end on a clean Ubuntu 22.04 machine or container.
 Document the exact `apt` packages needed: `libwebkit2gtk-4.1-dev`,
 `libayatana-appindicator3-dev`, `libssl-dev`. Produce a working `.AppImage`.
 
-**4.4 Desktop notification on sync error** ✅ Fixed  
-`recordError` in `sync.ts` now calls `show_notification` on each error, throttled
-to max 1 notification per 30 s.
-
 ---
 
 ## Research notes — Nextcloud desktop client
@@ -110,6 +54,7 @@ to max 1 notification per 30 s.
 *From analysis of `../desktop` (Nextcloud's official C++/Qt client), 2026-05-23.*
 
 ### Tray
+
 - Rich tray info lives in a **frameless popup window** (QML `ApplicationWindow` with
   `Qt.FramelessWindowHint`) that pops up relative to the tray icon — not a native menu.
 - The native context menu is minimal (pause/resume, settings, exit); all status/activity is
@@ -124,6 +69,7 @@ to max 1 notification per 30 s.
 richer status info. See item 4.6 below.
 
 ### Virtual file system (VFS / on-demand sync)
+
 - **Nextcloud does not use FUSE on Linux.** Placeholders are real 1-byte files on disk.
 - Metadata (size, mtime, etag) stored in Linux extended attributes (`user.nextcloud.*`)
   and mirrored in SQLite.
@@ -135,6 +81,7 @@ richer status info. See item 4.6 below.
   implementations (`VfsXAttr`, `VfsCfApi`, `VfsSuffix`). Maps cleanly to Rust traits.
 
 **Applicable to us (if we ever add VFS):**
+
 - Realistic Linux path: xattr-based placeholders + per-file pin states + SQLite metadata.
   Download triggered on next sync cycle, not on file open.
 - True on-demand (file open → download) would require FUSE (`libfuse` + a FUSE filesystem
@@ -146,7 +93,7 @@ richer status info. See item 4.6 below.
 ## Deferred (conscious decisions, not forgotten)
 
 | Item | Reason deferred | Revisit |
-|------|----------------|---------|
+| --- | --- | --- |
 | Concurrent uploads | Sequential is safe; ordering bugs are worse than slow | After basic sync is stable |
 | Retry / backoff | SDK retries transient errors internally; outer wrapper is marginal | After G1–G4 fixed |
 | Runtime conflict wizard | Last-write-wins is documented v1 policy | Phase 3 follow-up |

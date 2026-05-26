@@ -9,20 +9,14 @@
  *   both, different        → user decides per row
  */
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { listDirRecursive } from "../lib/ipcApi";
 import { NodeType } from "@protontech/drive-sdk";
 import { listFolderChildren, streamDownloadToPath } from "../lib/drive";
 import type { SelectedFolderRecord } from "../lib/sync";
+import type { LocalFileEntry } from "../types/sync";
 import { useLang } from "../lib/i18n";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-interface LocalFileEntry {
-  relPath: string;
-  absPath: string;
-  mtimeMs: number;
-  sizeBytes: number;
-}
 
 interface RemoteFile {
   uid: string;
@@ -227,7 +221,7 @@ async function detectConflicts(
   selectedFolders: SelectedFolderRecord[],
 ): Promise<ConflictFile[]> {
   // Build map of rel path → local file entry
-  const localFiles = await invoke<LocalFileEntry[]>("list_dir_recursive", { absPath: localRoot });
+  const localFiles = await listDirRecursive(localRoot);
   const localByRel = new Map(localFiles.map((f) => [f.relPath, f]));
 
   const conflicts: ConflictFile[] = [];
