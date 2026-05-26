@@ -3,7 +3,7 @@ import { getSyncRoot, listFolderChildren } from "../drive";
 import { NodeType } from "@protontech/drive-sdk";
 import type { SelectedFolderRecord } from "../syncHelpers";
 import { watchedFolderUids, statFile } from "./state";
-import type { FileStat } from "../syncDecisions";
+import type { FileStat } from "../../types/sync";
 
 // ── Config loading ───────────────────────────────────────────────────────────
 
