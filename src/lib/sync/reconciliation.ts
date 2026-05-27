@@ -40,6 +40,7 @@ export async function initialSyncFolder(): Promise<void> {
         const node = result.value;
         const existing = await getFileStateByRemoteId(node.uid);
         if (existing) {
+          // If activeRevision is absent, conservatively re-download — could be a draft/in-progress revision.
           const remoteRevUid = node.activeRevision?.uid;
           if (remoteRevUid && remoteRevUid === existing.etag) continue;
         }
@@ -56,7 +57,7 @@ export async function initialSyncFolder(): Promise<void> {
       downloadSemaphore.run(async () => {
         await handleRemoteNodeUpdate(uid, true);
         downloaded++;
-      }).catch(() => {}),
+      }).catch((err) => console.warn("[sync] download failed for", uid, err)),
     ),
   );
 
@@ -96,7 +97,7 @@ export async function initialSyncLocalFolder(): Promise<void> {
       uploadSemaphore.run(async () => {
         await handleLocalUpsert(absPath, false, true);
         uploaded++;
-      }).catch(() => {}),
+      }).catch((err) => console.warn("[sync] upload failed for", absPath, err)),
     ),
   );
 

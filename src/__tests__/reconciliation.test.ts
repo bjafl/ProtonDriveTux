@@ -347,6 +347,32 @@ describe("initialSyncFolder — parallel fan-out", () => {
     expect(notifications).toHaveLength(1);
     expect(notifications[0].body).toMatch(/3 files/);
   });
+
+  it("does not increment downloaded counter when handleRemoteNodeUpdate throws", async () => {
+    _setWatchedFoldersForTesting(new Map([[FOLDER_UID, makeEntry()]]));
+
+    const notifications: Array<{ title: string; body: string }> = [];
+    setupIpcMocks({
+      get_file_state_by_remote_id: () => null,
+      show_notification: ({ title, body }) => {
+        notifications.push({ title: title as string, body: body as string });
+        return null;
+      },
+    });
+    vi.mocked(listFolderChildren).mockImplementation(async function* () {
+      yield { ok: true as const, value: { uid: "n1", activeRevision: null } };
+      yield { ok: true as const, value: { uid: "n2", activeRevision: null } };
+    });
+    vi.mocked(handleRemoteNodeUpdate)
+      .mockRejectedValueOnce(new Error("network error")) // n1 fails
+      .mockResolvedValue(undefined); // n2 succeeds
+
+    await initialSyncFolder();
+
+    // Only 1 success → notification should say "1 file", not "2 files"
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].body).toBe("Downloaded 1 file");
+  });
 });
 
 // ── initialSyncLocalFolder — parallel fan-out ────────────────────────────────
