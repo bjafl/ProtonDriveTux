@@ -163,6 +163,8 @@ export function setSyncStatusCallback(cb: ((s: SyncStatus) => void) | null): voi
 
 /** @internal */
 export function _resetSyncStateForTesting(): void {
+  downloadSemaphore.reset();
+  uploadSemaphore.reset();
   suppressUntil.clear();
   recentlyUploaded.clear();
   watchedFolderUids.clear();

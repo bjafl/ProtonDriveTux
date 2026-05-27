@@ -31,6 +31,7 @@ import {
   _fullSyncInProgress,
   setFullSyncInProgress,
 } from "../lib/sync/state";
+import { downloadSemaphore, DOWNLOAD_CONCURRENCY } from "../lib/sync/concurrency";
 import { setupIpcMocks, teardownIpcMocks } from "./helpers/syncMocks";
 
 beforeEach(() => {
@@ -317,6 +318,41 @@ describe("scheduleTrayUpdate", () => {
     await vi.advanceTimersByTimeAsync(400);
 
     expect(calls[0]).toMatchObject({ paused: true, syncing: true, activeCount: 1 });
+  });
+
+  it("forwards queuedDown from downloadSemaphore into the tray status payload", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    setupIpcMocks({ update_tray_status: (payload) => { calls.push(payload); return null; } });
+
+    // Fill all slots so the next task must queue
+    let releaseSlot!: () => void;
+    const blocker = downloadSemaphore.run(
+      () => new Promise<void>((r) => { releaseSlot = r; }),
+    );
+    const fillerReleasers: Array<() => void> = [];
+    const fillers = Array.from({ length: DOWNLOAD_CONCURRENCY - 1 }, () =>
+      downloadSemaphore.run(() => new Promise<void>((r) => { fillerReleasers.push(r); })),
+    );
+
+    // Enqueue one more — it must wait (queued = 1).
+    // Its resolver is only assigned once a slot opens, so we just discard the promise.
+    const queued = downloadSemaphore.run(() => Promise.resolve());
+
+    expect(downloadSemaphore.queued).toBe(1);
+
+    vi.useFakeTimers();
+    scheduleTrayUpdate();
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]["queuedDown"]).toBe(1);
+
+    // Cleanup: release all held slots so the semaphore drains
+    releaseSlot();
+    fillerReleasers.forEach((r) => r());
+    vi.useRealTimers();
+    await Promise.allSettled([blocker, queued, ...fillers]);
+    downloadSemaphore.reset();
   });
 });
 
