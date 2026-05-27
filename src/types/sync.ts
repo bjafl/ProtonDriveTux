@@ -39,4 +39,6 @@ export interface TrayStatusPayload {
   activeCount: number;
   recentFiles: TrayRecentFile[];
   errorCount: number;
+  queuedDown: number;
+  queuedUp: number;
 }

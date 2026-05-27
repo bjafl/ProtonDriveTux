@@ -47,12 +47,17 @@ export function TrayPopup() {
   const syncing = status?.syncing ?? false;
   const errorCount = status?.errorCount ?? 0;
   const activeCount = status?.activeCount ?? 0;
+  const queuedDown = status?.queuedDown ?? 0;
+  const queuedUp = status?.queuedUp ?? 0;
+  const totalQueued = queuedDown + queuedUp;
 
   const statusEmoji = paused ? "⏸" : errorCount > 0 ? "⚠" : syncing ? "↕" : "✓";
   const statusText = paused
     ? "Sync paused"
     : syncing
-    ? `Syncing ${activeCount} item${activeCount !== 1 ? "s" : ""}…`
+    ? totalQueued > 0
+      ? `Syncing ${activeCount} item${activeCount !== 1 ? "s" : ""}… (${totalQueued} queued)`
+      : `Syncing ${activeCount} item${activeCount !== 1 ? "s" : ""}…`
     : errorCount > 0
     ? `${errorCount} error${errorCount !== 1 ? "s" : ""}`
     : "Up to date";

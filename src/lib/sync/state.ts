@@ -1,6 +1,7 @@
 import { updateTrayStatus, showNotification, statLocalFile } from "../ipcApi";
 import type { WatchedFolderEntry, SelectedFolderRecord } from "../syncHelpers";
 import type { FileStat } from "../../types/sync";
+import { downloadSemaphore, uploadSemaphore } from "./concurrency";
 
 // Re-export for consumers of sync/index.ts
 export type { WatchedFolderEntry, SelectedFolderRecord };
@@ -86,6 +87,8 @@ export function scheduleTrayUpdate(): void {
       activeCount: activeItems.length,
       recentFiles: _recentlySynced.slice(0, 8),
       errorCount: _status.errors.length,
+      queuedDown: downloadSemaphore.queued,
+      queuedUp: uploadSemaphore.queued,
     }).catch(() => {});
   }, 400);
 }

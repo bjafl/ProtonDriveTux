@@ -16,6 +16,8 @@ pub struct TrayStatusPayload {
     pub active_count: usize,
     pub recent_files: Vec<RecentFile>,
     pub error_count: usize,
+    pub queued_down: usize,
+    pub queued_up: usize,
 }
 
 /// Shows a desktop notification. Silently no-ops if the notification daemon is unavailable.
