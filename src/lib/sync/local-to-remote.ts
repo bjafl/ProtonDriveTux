@@ -205,19 +205,7 @@ export async function handleLocalUpsert(
       return false;
     }
 
-    // Fetch raw file bytes via pd-file:// to avoid base64 encoding the entire file
-    // over IPC — large files would otherwise OOM the WebView.
-    // let blob: Blob;
-    // try {
-    //   const response = await fetch(`pd-file://${absPath}`);
-    //   if (!response.ok) throw new Error(`pd-file fetch ${response.status}`);
-    //   blob = await response.blob();
-    // } catch (err) {
-    //   console.log("[sync] skipping (unreadable via pd-file://):", absPath, err);
-    //   return false;
-    // }
     const fileRawData = await readLocalFile(absPath);
-    // const blob = new Blob([fileRawData], {type: "application/octet-stream"});
     const filename = absPath.split("/").pop() ?? absPath;
     const file = new File([fileRawData], filename, {
       lastModified: stat.mtimeMs,

@@ -1,7 +1,7 @@
 import { updateTrayStatus, showNotification, statLocalFile } from "../ipcApi";
 import type { WatchedFolderEntry, SelectedFolderRecord } from "../syncHelpers";
 import type { FileStat } from "../../types/sync";
-import { downloadSemaphore, uploadSemaphore } from "./concurrency";
+import { downloadSemaphore, uploadSemaphore, downloadQueue, uploadQueue } from "./concurrency";
 
 // Re-export for consumers of sync/index.ts
 export type { WatchedFolderEntry, SelectedFolderRecord };
@@ -165,6 +165,8 @@ export function setSyncStatusCallback(cb: ((s: SyncStatus) => void) | null): voi
 export function _resetSyncStateForTesting(): void {
   downloadSemaphore.reset();
   uploadSemaphore.reset();
+  downloadQueue.reset();
+  uploadQueue.reset();
   suppressUntil.clear();
   recentlyUploaded.clear();
   watchedFolderUids.clear();
