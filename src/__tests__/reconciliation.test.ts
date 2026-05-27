@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { cleanStaleDbEntries, triggerFullSync, initialSyncLocalFolder } from "../lib/sync/reconciliation";
+import { cleanStaleDbEntries, triggerFullSync, initialSyncLocalFolder, initialSyncFolder } from "../lib/sync/reconciliation";
 import { waitForFileStable } from "../lib/sync/config";
 import { listFolderChildren } from "../lib/drive";
 import {
@@ -12,6 +12,19 @@ import {
 } from "../lib/sync/state";
 import { setupIpcMocks, teardownIpcMocks } from "./helpers/syncMocks";
 import type { WatchedFolderEntry } from "../lib/syncHelpers";
+import { downloadSemaphore, uploadSemaphore } from "../lib/sync/concurrency";
+import { handleRemoteNodeUpdate } from "../lib/sync/remote-to-local";
+import { handleLocalUpsert } from "../lib/sync/local-to-remote";
+
+vi.mock("../lib/sync/remote-to-local", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/sync/remote-to-local")>();
+  return { ...actual, handleRemoteNodeUpdate: vi.fn() };
+});
+
+vi.mock("../lib/sync/local-to-remote", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/sync/local-to-remote")>();
+  return { ...actual, handleLocalUpsert: vi.fn() };
+});
 
 vi.mock("../lib/drive", () => ({
   getSyncRoot: vi.fn(),
@@ -243,5 +256,142 @@ describe("waitForFileStable", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     const result = await promise;
     expect(result).toBeNull();
+  });
+});
+
+// ── initialSyncFolder — parallel fan-out ─────────────────────────────────────
+
+describe("initialSyncFolder — parallel fan-out", () => {
+  beforeEach(() => {
+    downloadSemaphore.reset();
+    vi.mocked(handleRemoteNodeUpdate).mockClear();
+    vi.mocked(handleRemoteNodeUpdate).mockResolvedValue(undefined);
+  });
+
+  it("calls handleRemoteNodeUpdate once per node that needs downloading", async () => {
+    _setWatchedFoldersForTesting(new Map([[FOLDER_UID, makeEntry()]]));
+
+    function makeNode(uid: string, revUid: string) {
+      return { ok: true, value: { uid, activeRevision: { uid: revUid } } };
+    }
+    const nodes = [makeNode("node-1", "rev-1"), makeNode("node-2", "rev-2")];
+
+    vi.mocked(listFolderChildren).mockReturnValue(
+      (async function* () {
+        for (const n of nodes) yield n;
+      })() as ReturnType<typeof listFolderChildren>,
+    );
+
+    // DB returns null for both → both need downloading
+    setupIpcMocks({ get_file_state_by_remote_id: () => null });
+
+    await initialSyncFolder();
+
+    expect(handleRemoteNodeUpdate).toHaveBeenCalledTimes(2);
+    expect(handleRemoteNodeUpdate).toHaveBeenCalledWith("node-1", true);
+    expect(handleRemoteNodeUpdate).toHaveBeenCalledWith("node-2", true);
+  });
+
+  it("skips nodes whose etag already matches", async () => {
+    _setWatchedFoldersForTesting(new Map([[FOLDER_UID, makeEntry()]]));
+
+    const revUid = "rev-already-synced";
+    vi.mocked(listFolderChildren).mockReturnValue(
+      (async function* () {
+        yield { ok: true, value: { uid: "node-synced", activeRevision: { uid: revUid } } };
+      })() as ReturnType<typeof listFolderChildren>,
+    );
+
+    // DB has matching etag → should be skipped
+    setupIpcMocks({
+      get_file_state_by_remote_id: () => ({
+        remoteId: "node-synced",
+        localPath: `${ROOT}/file.txt`,
+        etag: revUid,
+        modifiedAt: null,
+        sizeBytes: null,
+        syncState: "synced",
+      }),
+    });
+
+    await initialSyncFolder();
+
+    expect(handleRemoteNodeUpdate).not.toHaveBeenCalled();
+  });
+
+  it("fires one summary notification after batch completes", async () => {
+    _setWatchedFoldersForTesting(new Map([[FOLDER_UID, makeEntry()]]));
+
+    const nodes = [
+      { ok: true, value: { uid: "n1", activeRevision: { uid: "r1" } } },
+      { ok: true, value: { uid: "n2", activeRevision: { uid: "r2" } } },
+      { ok: true, value: { uid: "n3", activeRevision: { uid: "r3" } } },
+    ];
+    vi.mocked(listFolderChildren).mockReturnValue(
+      (async function* () {
+        for (const n of nodes) yield n;
+      })() as ReturnType<typeof listFolderChildren>,
+    );
+
+    const notifications: Array<{ title: string; body: string }> = [];
+    setupIpcMocks({
+      get_file_state_by_remote_id: () => null,
+      show_notification: ({ title, body }) => {
+        notifications.push({ title: title as string, body: body as string });
+        return null;
+      },
+    });
+
+    await initialSyncFolder();
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].body).toMatch(/3 files/);
+  });
+});
+
+// ── initialSyncLocalFolder — parallel fan-out ────────────────────────────────
+
+describe("initialSyncLocalFolder — parallel fan-out", () => {
+  beforeEach(() => {
+    uploadSemaphore.reset();
+    vi.mocked(handleLocalUpsert).mockClear();
+    vi.mocked(handleLocalUpsert).mockResolvedValue(undefined);
+  });
+
+  it("calls handleLocalUpsert with silent=true for each file in files mode", async () => {
+    const entry: WatchedFolderEntry = {
+      localDir: ROOT,
+      selectedRoot: { uid: FOLDER_UID, name: "ProtonDrive", drivePath: "", mode: "files" },
+    };
+    _setWatchedFoldersForTesting(new Map([[FOLDER_UID, entry]]));
+
+    setupIpcMocks({
+      ensure_local_dir: () => null,
+      list_local_dir: () => [`${ROOT}/a.txt`, `${ROOT}/b.txt`],
+    });
+
+    await initialSyncLocalFolder();
+
+    expect(handleLocalUpsert).toHaveBeenCalledTimes(2);
+    expect(handleLocalUpsert).toHaveBeenCalledWith(`${ROOT}/a.txt`, false, true);
+    expect(handleLocalUpsert).toHaveBeenCalledWith(`${ROOT}/b.txt`, false, true);
+  });
+
+  it("calls handleLocalUpsert with silent=true for each file in recursive mode", async () => {
+    _setWatchedFoldersForTesting(new Map([[FOLDER_UID, makeEntry()]]));
+
+    setupIpcMocks({
+      ensure_local_dir: () => null,
+      list_dir_recursive: () => [
+        { absPath: `${ROOT}/sub/c.txt`, relPath: "sub/c.txt", mtimeMs: 1000, sizeBytes: 10 },
+        { absPath: `${ROOT}/sub/d.txt`, relPath: "sub/d.txt", mtimeMs: 1000, sizeBytes: 10 },
+      ],
+    });
+
+    await initialSyncLocalFolder();
+
+    expect(handleLocalUpsert).toHaveBeenCalledTimes(2);
+    expect(handleLocalUpsert).toHaveBeenCalledWith(`${ROOT}/sub/c.txt`, false, true);
+    expect(handleLocalUpsert).toHaveBeenCalledWith(`${ROOT}/sub/d.txt`, false, true);
   });
 });

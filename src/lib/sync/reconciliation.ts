@@ -5,6 +5,7 @@ import {
   listLocalDir,
   getAllFileStates,
   deleteFileState,
+  showNotification,
 } from "../ipcApi";
 import { listFolderChildren } from "../drive";
 import { NodeType } from "@protontech/drive-sdk";
@@ -21,10 +22,13 @@ import {
 import type { FileState } from "./state";
 import { handleRemoteNodeUpdate } from "./remote-to-local";
 import { handleLocalUpsert } from "./local-to-remote";
+import { downloadSemaphore, uploadSemaphore } from "./concurrency";
 
 // ── Initial sync ─────────────────────────────────────────────────────────────
 
 export async function initialSyncFolder(): Promise<void> {
+  const toDownload: string[] = [];
+
   for (const [folderUid, entry] of watchedFolderUids) {
     console.log("[sync] Scanning remote folder:", entry.localDir);
     try {
@@ -39,15 +43,33 @@ export async function initialSyncFolder(): Promise<void> {
           const remoteRevUid = node.activeRevision?.uid;
           if (remoteRevUid && remoteRevUid === existing.etag) continue;
         }
-        await handleRemoteNodeUpdate(node.uid);
+        toDownload.push(node.uid);
       }
     } catch (err) {
       console.error("[sync] Folder scan failed for", entry.localDir, err);
     }
   }
+
+  let downloaded = 0;
+  await Promise.all(
+    toDownload.map((uid) =>
+      downloadSemaphore.run(async () => {
+        await handleRemoteNodeUpdate(uid, true);
+        downloaded++;
+      }).catch(() => {}),
+    ),
+  );
+
+  if (downloaded === 1) {
+    showNotification("Proton Drive Sync", "Downloaded 1 file").catch(() => {});
+  } else if (downloaded > 1) {
+    showNotification("Proton Drive Sync", `Downloaded ${downloaded} files`).catch(() => {});
+  }
 }
 
 export async function initialSyncLocalFolder(): Promise<void> {
+  const toUpload: string[] = [];
+
   for (const [, entry] of watchedFolderUids) {
     console.log("[sync] Scanning local folder:", entry.localDir);
     await ensureLocalDir(entry.localDir).catch(console.error);
@@ -55,17 +77,33 @@ export async function initialSyncLocalFolder(): Promise<void> {
       if (entry.selectedRoot.mode === "recursive") {
         const files = await listDirRecursive(entry.localDir);
         for (const f of files) {
-          await handleLocalUpsert(f.absPath, false);
+          toUpload.push(f.absPath);
         }
       } else {
         const files = await listLocalDir(entry.localDir);
         for (const absPath of files) {
-          await handleLocalUpsert(absPath, false);
+          toUpload.push(absPath);
         }
       }
     } catch (err) {
       console.error("[sync] Local folder scan failed for", entry.localDir, err);
     }
+  }
+
+  let uploaded = 0;
+  await Promise.all(
+    toUpload.map((absPath) =>
+      uploadSemaphore.run(async () => {
+        await handleLocalUpsert(absPath, false, true);
+        uploaded++;
+      }).catch(() => {}),
+    ),
+  );
+
+  if (uploaded === 1) {
+    showNotification("Proton Drive Sync", "Uploaded 1 file").catch(() => {});
+  } else if (uploaded > 1) {
+    showNotification("Proton Drive Sync", `Uploaded ${uploaded} files`).catch(() => {});
   }
 }
 
@@ -95,8 +133,7 @@ export async function triggerFullSync(): Promise<void> {
   console.log("[sync] Starting full reconciliation…");
   try {
     await cleanStaleDbEntries();
-    await initialSyncFolder();
-    await initialSyncLocalFolder();
+    await Promise.all([initialSyncFolder(), initialSyncLocalFolder()]);
     console.log("[sync] Full reconciliation complete");
   } catch (err) {
     console.error("[sync] Full reconciliation failed:", err);
