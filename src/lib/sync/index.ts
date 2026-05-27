@@ -31,6 +31,7 @@ import {
   recentlyUploaded,
   watchedFolderUids,
 } from "./state";
+import { uploadQueue } from "./concurrency";
 import type { WatchEvent } from "./state";
 
 // ── Re-export entire public API ──────────────────────────────────────────────
@@ -73,26 +74,20 @@ export async function startSync(): Promise<() => void> {
     await ensureLocalDir(entry.localDir).catch(console.error);
   }
 
-  await initialSyncFolder();
-  await initialSyncLocalFolder();
+  await Promise.all([initialSyncFolder(), initialSyncLocalFolder()]);
 
   const subscription = await subscribeToTreeEvents(
     treeEventScopeId,
-    async (event: DriveEvent) => {
-      try {
-        await handleDriveEvent(event, initialSyncFolder);
-      } catch (err) {
+    (event: DriveEvent) => {
+      return handleDriveEvent(event, initialSyncFolder).catch((err) => {
         console.error("[sync] Unhandled error in drive event handler:", err);
-      }
+      });
     },
   );
 
-  const unlisten: UnlistenFn = await listen<WatchEvent>("sync://local-change", async (e) => {
-    try {
-      await handleLocalChange(e.payload);
-    } catch (err) {
-      console.error("[sync] Unhandled error in local-change handler:", err);
-    }
+  const unlisten: UnlistenFn = await listen<WatchEvent>("sync://local-change", (e) => {
+    if (e.payload.absPath.endsWith(".pd-tmp")) return;
+    uploadQueue.enqueue(e.payload.absPath, () => handleLocalChange(e.payload));
   });
 
   console.log("[sync] Sync engine started");

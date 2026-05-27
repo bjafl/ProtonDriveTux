@@ -21,7 +21,9 @@ import {
   recordError,
   addRecentlySynced,
   _paused,
+  _fullSyncInProgress,
 } from "./state";
+import { downloadQueue } from "./concurrency";
 // ── Remote → Local ───────────────────────────────────────────────────────────
 
 export async function handleDriveEvent(
@@ -51,15 +53,19 @@ export async function handleDriveEvent(
       return;
     }
 
-    await handleRemoteNodeUpdate(event.nodeUid);
+    downloadQueue.enqueue(event.nodeUid, () => handleRemoteNodeUpdate(event.nodeUid));
   } else if (event.type === DriveEventType.NodeDeleted) {
     await handleRemoteDelete(event.nodeUid);
   } else if (
     event.type === DriveEventType.TreeRefresh ||
     event.type === DriveEventType.FastForward
   ) {
-    console.log("[sync] received", event.type, "— triggering full folder re-scan");
-    await onFullRefresh();
+    if (!_fullSyncInProgress) {
+      console.log("[sync] received", event.type, "— triggering full folder re-scan");
+      onFullRefresh().catch(console.error);
+    } else {
+      console.log("[sync] received", event.type, "— full sync already in progress, skipping");
+    }
   } else {
     console.log("[sync] ignoring drive event type:", event.type);
   }
