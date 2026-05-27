@@ -359,10 +359,12 @@ describe("initialSyncFolder — parallel fan-out", () => {
         return null;
       },
     });
-    vi.mocked(listFolderChildren).mockImplementation(async function* () {
-      yield { ok: true as const, value: { uid: "n1", activeRevision: null } };
-      yield { ok: true as const, value: { uid: "n2", activeRevision: null } };
-    });
+    vi.mocked(listFolderChildren).mockReturnValue(
+      (async function* () {
+        yield { ok: true as const, value: { uid: "n1", activeRevision: null } };
+        yield { ok: true as const, value: { uid: "n2", activeRevision: null } };
+      })() as ReturnType<typeof listFolderChildren>,
+    );
     vi.mocked(handleRemoteNodeUpdate)
       .mockRejectedValueOnce(new Error("network error")) // n1 fails
       .mockResolvedValue(undefined); // n2 succeeds
