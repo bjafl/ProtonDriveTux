@@ -1,4 +1,4 @@
-# Proton Drive Linux Sync
+# ProtonDriveTux
 
 > **Unofficial, non-commercial.** This project is not affiliated with or supported by Proton AG.
 > Proton has announced an official Linux client; this fills the gap in the meantime.
@@ -11,8 +11,7 @@ is handled entirely by Proton's code.
 
 ## Status
 
-Working prototype. The core sync loop is complete — see [PLAN.md](PLAN.md) for the
-remaining AppImage build verification task.
+Working prototype. The core sync loop is complete.
 
 | Feature | State |
 |---------|-------|
@@ -34,7 +33,12 @@ remaining AppImage build verification task.
 | Full reconciliation (periodic + manual "Sync now") | ✅ |
 | Sync pause / resume (button + tray) | ✅ |
 | Large file streaming (no base64 round-trip) | ✅ |
+| Parallel downloads (up to 6 concurrent) | ✅ |
+| Parallel uploads (up to 4 concurrent) | ✅ |
+| Simultaneous up + down on initial sync | ✅ |
+| Per-key event coalescing (no duplicate writes) | ✅ |
 | System tray with sync state + recent files | ✅ |
+| Tray shows queued count under backpressure | ✅ |
 | Desktop notifications (sync + errors) | ✅ |
 | Autostart on login | ✅ |
 
@@ -76,8 +80,8 @@ npm install -g pnpm
 
 ```bash
 # Clone with submodules (includes the Proton Drive SDK)
-git clone --recurse-submodules <repo-url>
-cd proton-drive-linux-sync
+git clone --recurse-submodules git@github.com:bjafl/ProtonDriveTux.git
+cd ProtonDriveTux
 
 # If you already cloned without --recurse-submodules:
 git submodule update --init --recursive
@@ -143,6 +147,12 @@ write to finish) → `pd-file://` fetch raw bytes → SDK encrypts + uploads →
 **Drive → local:** SDK Drive event subscription → compare revision ID against
 SQLite → download + decrypt → stream chunks to disk → SQLite updated.
 
+**Concurrency:** Downloads and uploads run in parallel with bounded concurrency
+(6 downloads, 4 uploads). Both directions run simultaneously during initial sync.
+Live events go through a per-file coalescing queue — if the same file changes
+multiple times while a download/upload is in flight, the intermediate events
+collapse into a single re-run after the current one completes.
+
 Anti-loop: files written locally by a Drive download are suppressed from
 re-upload for 5 seconds. Large files never buffer entirely in memory — uploads
 fetch bytes via a custom `pd-file://` URI scheme, downloads write each chunk
@@ -157,7 +167,7 @@ your machine. Session tokens are stored in GNOME Keyring, not on disk.
 
 - Passwords are never stored. Only access + refresh tokens are persisted, in GNOME Keyring.
 - All Drive operations go through Proton's SDK; no direct API calls bypass it.
-- Every request carries `x-pm-appversion: external-drive-protondrive@0.1.0-alpha`
+- Every request carries `x-pm-appversion: external-drive-protondrive-linux@0.1.0-alpha`
   as required by Proton's terms.
 - This is personal-use software. Proton's SDK terms prohibit commercial use without agreement.
 
@@ -168,7 +178,6 @@ your machine. Session tokens are stored in GNOME Keyring, not on disk.
 - **System tray requires** `gnome-shell-extension-appindicator` on GNOME Shell
   (installed by default on Ubuntu 22.04+).
 - **Single account only** — no multi-account support.
-- **AppImage not yet verified** on a clean build machine — see [PLAN.md](PLAN.md) 4.3.
 - Proton's SDK has a breaking crypto change coming (ETA late 2026). All SDK calls
   are isolated in `src/lib/drive.ts` to minimise the migration surface.
 
@@ -191,9 +200,7 @@ Neither codebase was copied — they were read for behaviour and protocol detail
 
 ## Contributing
 
-PRs and issues are welcome. This is a personal project and response time may vary,
-but improvements to the known gaps in [PLAN.md](PLAN.md) are especially appreciated.
-
+PRs and issues are welcome. This is a personal project and response time may vary.
 If you hit a bug or want to discuss an approach before writing code, open an issue first.
 
 ---
