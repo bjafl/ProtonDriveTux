@@ -95,8 +95,8 @@ export async function initialSyncLocalFolder(): Promise<void> {
   await Promise.all(
     toUpload.map((absPath) =>
       uploadSemaphore.run(async () => {
-        await handleLocalUpsert(absPath, false, true);
-        uploaded++;
+        const wasUploaded = await handleLocalUpsert(absPath, false, true);
+        if (wasUploaded) uploaded++;
       }).catch((err) => console.warn("[sync] upload failed for", absPath, err)),
     ),
   );

@@ -171,16 +171,16 @@ export async function handleLocalUpsert(
   absPath: string,
   checkStability: boolean,
   silent = false,
-): Promise<void> {
+): Promise<boolean> {
   if (_paused) {
     console.log("[sync] paused — skipping upload:", absPath);
-    return;
+    return false;
   }
 
   const match = findWatchedFolderByLocalPath(absPath);
   if (!match) {
     console.log("[sync] file not in any watched folder, skipping:", absPath);
-    return;
+    return false;
   }
   const targetFolderUid = match.uid;
 
@@ -192,7 +192,7 @@ export async function handleLocalUpsert(
       : await statFile(absPath);
     if (!stat) {
       console.log("[sync] skipping (file disappeared or unreadable):", absPath);
-      return;
+      return false;
     }
 
     const existing = await getFileStateByLocalPath(absPath);
@@ -202,7 +202,7 @@ export async function handleLocalUpsert(
         "[sync] skipping upload — size and mtime unchanged:",
         absPath,
       );
-      return;
+      return false;
     }
 
     // Fetch raw file bytes via pd-file:// to avoid base64 encoding the entire file
@@ -214,7 +214,7 @@ export async function handleLocalUpsert(
     //   blob = await response.blob();
     // } catch (err) {
     //   console.log("[sync] skipping (unreadable via pd-file://):", absPath, err);
-    //   return;
+    //   return false;
     // }
     const fileRawData = await readLocalFile(absPath);
     // const blob = new Blob([fileRawData], {type: "application/octet-stream"});
@@ -258,7 +258,7 @@ export async function handleLocalUpsert(
             "[sync] skipping Docs node (revision upload not supported):",
             absPath,
           );
-          return;
+          return false;
         }
         throw err;
       }
@@ -298,9 +298,12 @@ export async function handleLocalUpsert(
         `${existing ? "Updated" : "Uploaded"}: ${filename}`,
       ).catch(() => {});
     }
+
+    return true;
   } catch (err) {
     console.error("[sync] upload failed for", absPath, err);
     recordError(absPath, String(err));
+    return false;
   } finally {
     markInactive(label);
   }

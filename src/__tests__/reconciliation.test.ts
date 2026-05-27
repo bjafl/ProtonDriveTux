@@ -383,7 +383,7 @@ describe("initialSyncLocalFolder — parallel fan-out", () => {
   beforeEach(() => {
     uploadSemaphore.reset();
     vi.mocked(handleLocalUpsert).mockClear();
-    vi.mocked(handleLocalUpsert).mockResolvedValue(undefined);
+    vi.mocked(handleLocalUpsert).mockResolvedValue(false);
   });
 
   it("calls handleLocalUpsert with silent=true for each file in files mode", async () => {
