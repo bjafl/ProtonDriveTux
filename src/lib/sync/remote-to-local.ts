@@ -34,53 +34,56 @@ export async function handleDriveEvent(
     console.log("[sync] paused — ignoring drive event:", event.type);
     return;
   }
-  if (
-    event.type === DriveEventType.NodeCreated ||
-    event.type === DriveEventType.NodeUpdated
-  ) {
-    if (event.isTrashed) {
+
+  try {
+    if (
+      event.type === DriveEventType.NodeCreated ||
+      event.type === DriveEventType.NodeUpdated
+    ) {
+      if (event.isTrashed) {
+        await handleRemoteDelete(event.nodeUid);
+        return;
+      }
+
+      if (event.parentNodeUid && !watchedFolderUids.has(event.parentNodeUid)) {
+        console.log("[sync] skipping node outside watched folders (by parentUid):", event.nodeUid);
+        return;
+      }
+
+      if (recentlyUploaded.has(event.nodeUid)) {
+        console.log("[sync] suppressed drive event for own upload:", event.nodeUid);
+        return;
+      }
+
+      downloadQueue.enqueue(event.nodeUid, () => handleRemoteNodeUpdate(event.nodeUid));
+    } else if (event.type === DriveEventType.NodeDeleted) {
       await handleRemoteDelete(event.nodeUid);
-      return;
-    }
-
-    if (event.parentNodeUid && !watchedFolderUids.has(event.parentNodeUid)) {
-      console.log("[sync] skipping node outside watched folders (by parentUid):", event.nodeUid);
-      return;
-    }
-
-    if (recentlyUploaded.has(event.nodeUid)) {
-      console.log("[sync] suppressed drive event for own upload:", event.nodeUid);
-      return;
-    }
-
-    downloadQueue.enqueue(event.nodeUid, () => handleRemoteNodeUpdate(event.nodeUid));
-  } else if (event.type === DriveEventType.NodeDeleted) {
-    await handleRemoteDelete(event.nodeUid);
-  } else if (
-    event.type === DriveEventType.TreeRefresh ||
-    event.type === DriveEventType.FastForward
-  ) {
-    if (!_fullSyncInProgress) {
-      console.log("[sync] received", event.type, "— triggering full folder re-scan");
-      onFullRefresh().catch(console.error);
+    } else if (
+      event.type === DriveEventType.TreeRefresh ||
+      event.type === DriveEventType.FastForward
+    ) {
+      if (!_fullSyncInProgress) {
+        console.log("[sync] received", event.type, "— triggering full folder re-scan");
+        onFullRefresh().catch(console.error);
+      } else {
+        console.log("[sync] received", event.type, "— full sync already in progress, skipping");
+      }
     } else {
-      console.log("[sync] received", event.type, "— full sync already in progress, skipping");
+      console.log("[sync] ignoring drive event type:", event.type);
     }
-  } else {
-    console.log("[sync] ignoring drive event type:", event.type);
-  }
-
-  // Capture type before the `in`-check narrows the union to never in the else branch.
-  const eventType = event.type;
-  if ("treeEventScopeId" in event && "eventId" in event) {
-    persistEventAnchor(event.treeEventScopeId, event.eventId).catch(() => {});
-  } else if (
-    eventType === DriveEventType.TreeRefresh ||
-    eventType === DriveEventType.FastForward
-  ) {
-    // These event types did not carry eventId — anchor not advanced.
-    // Events since the refresh may replay from before it on restart (harmless but redundant).
-    console.warn("[sync]", eventType, "did not carry eventId — event anchor not updated");
+  } finally {
+    // Capture type before the `in`-check narrows the union to never in the else branch.
+    const eventType = event.type;
+    if ("treeEventScopeId" in event && "eventId" in event) {
+      persistEventAnchor(event.treeEventScopeId, event.eventId).catch(() => {});
+    } else if (
+      eventType === DriveEventType.TreeRefresh ||
+      eventType === DriveEventType.FastForward
+    ) {
+      // These event types did not carry eventId — anchor not advanced.
+      // Events since the refresh may replay from before it on restart (harmless but redundant).
+      console.warn("[sync]", eventType, "did not carry eventId — event anchor not updated");
+    }
   }
 }
 
